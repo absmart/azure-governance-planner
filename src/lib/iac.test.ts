@@ -377,7 +377,8 @@ describe('overrides and exemptions in the export', () => {
 
 describe('parking lot in the export', () => {
   it('sets the tenant default management group only when there is a parking lot', () => {
-    expect(model().hierarchySettings).toBeNull();
+    expect(model({ parkingLot: false }).hierarchySettings).toBeNull();
+    expect(model().hierarchySettings).toEqual({ defaultManagementGroupId: 'contoso-parkinglot', requireAuthorizationForGroupCreation: true });
     const m = model({ parkingLot: true, requireManagementGroupAuthorization: false });
     expect(m.hierarchySettings).toEqual({ defaultManagementGroupId: 'contoso-parkinglot', requireAuthorizationForGroupCreation: false });
     expect(m.managementGroups.find((g) => g.id === 'contoso-parkinglot')!.parentId).toBe('contoso');

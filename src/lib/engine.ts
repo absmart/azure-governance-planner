@@ -139,7 +139,7 @@ export const DEFAULT_INPUT: DesignInput = {
   local: false,
   confidential: false,
   sandbox: true,
-  parkingLot: false,
+  parkingLot: true,
   parkingLotGuardrails: 'sandbox',
   requireManagementGroupAuthorization: true,
   decommissioned: true,

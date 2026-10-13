@@ -51,6 +51,7 @@ describe('management groups', () => {
       'fabrikam-corp-landingzones',
       'fabrikam-corp-corp',
       'fabrikam-corp-online',
+      'fabrikam-corp-parkinglot',
       'fabrikam-corp-sandbox',
       'fabrikam-corp-decommissioned',
     ]);
@@ -310,8 +311,9 @@ describe('overrides and exemptions', () => {
 });
 
 describe('parking lot', () => {
-  it('is off by default', () => {
-    expect(design({}).mgs.map((m) => m.role)).not.toContain('parkinglot');
+  it('is on by default, and can be turned off', () => {
+    expect(design({}).mgs.map((m) => m.role)).toContain('parkinglot');
+    expect(design({ parkingLot: false }).mgs.map((m) => m.role)).not.toContain('parkinglot');
   });
 
   it('adds a Parking lot group under the root with the chosen guardrails', () => {

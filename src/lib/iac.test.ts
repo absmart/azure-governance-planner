@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import catalogJson from '../data/catalog.json';
 import type { Catalog } from './catalog';
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './engine';
-import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, unsetInputs } from './iac';
+import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, unsetInputs } from './iac';
 import { crc32, createZip } from './zip';
 
 const catalog = catalogJson as unknown as Catalog;
@@ -14,7 +14,6 @@ const library = JSON.parse(readFileSync(new URL('../../public/alz-library.json',
 const CREATED = new Set([
   'log_analytics_workspace_id',
   'ama_user_assigned_managed_identity_id',
-  'ama_user_assigned_managed_identity_name',
   'ama_vm_insights_data_collection_rule_id',
   'ama_change_tracking_data_collection_rule_id',
   'ama_mdfc_sql_data_collection_rule_id',
@@ -120,6 +119,45 @@ describe('buildIacModel', () => {
       });
     });
   }
+
+  it('names created resources <app>-<environment>-<region>-<int>-<type>, following the environment and location', () => {
+    const m = model({ allowedLocations: ['westeurope'] });
+    const name = (input: string, values: Record<string, string> = {}) =>
+      inputValue(m.inputs.find((i) => i.name === input)!, m, { environment: 'prd', values });
+    expect(name('management_resource_group_name')).toBe('management-prd-weu-01-rg');
+    expect(name('log_analytics_workspace_name')).toBe('management-prd-weu-01-log');
+    expect(name('ama_user_assigned_managed_identity_name')).toBe('ama-prd-weu-01-id');
+    expect(name('vm_insights_data_collection_rule_name')).toBe('vminsights-prd-weu-01-dcr');
+    expect(name('change_tracking_data_collection_rule_name')).toBe('changetracking-prd-weu-01-dcr');
+    expect(name('defender_sql_data_collection_rule_name')).toBe('defendersql-prd-weu-01-dcr');
+    expect(name('private_dns_zone_resource_group_name')).toBe('privatedns-prd-weu-01-rg');
+    expect(name('resource_group_name_mdfc')).toBe('mdfcexport-prd-weu-01-rg');
+    expect(name('management_resource_group_name', { location: 'eastus2' })).toBe('management-prd-eus2-01-rg');
+    expect(inputValue(m.inputs.find((i) => i.name === 'log_analytics_workspace_name')!, m, { environment: 'dev', values: {} })).toBe(
+      'management-dev-weu-01-log',
+    );
+    expect(name('management_resource_group_name', { management_resource_group_name: 'my-rg' })).toBe('my-rg');
+  });
+
+  it('creates the default private DNS zones, with regional names for the private DNS zone region', () => {
+    const m = model();
+    expect(m.platform.privateDnsZones).toContain('privatelink.blob.core.windows.net');
+    expect(m.platform.privateDnsZones).toContain('privatelink.database.windows.net');
+    expect(m.platform.privateDnsZones).toContain('privatelink.vaultcore.azure.net');
+    expect(m.platform.privateDnsZones).toContain('privatelink.{regionName}.azurecontainerapps.io');
+    const files = generateIacFiles('bicep', m, { environment: 'prd', values: { private_dns_zone_region: 'westeurope' } });
+    const zones = JSON.parse(files.find((f) => f.name === 'lib/platform-resources.json')!.content).privateDnsZones as string[];
+    expect(zones).toContain('privatelink.westeurope.azurecontainerapps.io');
+    expect(zones.some((z) => z.includes('{'))).toBe(false);
+    expect(new Set(zones).size).toBe(zones.length);
+    expect(model({ privateDnsZones: [] }).platform.privateDnsZones).toEqual([]);
+    expect(model({ privateCorp: false }).platform).toMatchObject({ privateDnsResourceGroup: false, privateDnsZones: [] });
+  });
+
+  it('asks for no DDoS plan by default', () => {
+    expect(model().inputs.map((i) => i.name)).not.toContain('ddos_protection_plan_id');
+    expect(model({ ddos: true }).inputs.map((i) => i.name)).toContain('ddos_protection_plan_id');
+  });
 
   it('creates no management resources when monitoring and Defender are off', () => {
     const m = model({ monitoring: false, defender: false });

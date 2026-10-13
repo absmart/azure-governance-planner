@@ -1,0 +1,73 @@
+// Region short codes for resource names: <app>-<environment>-<region>-<int>-<resourcetype>,
+// for example management-prd-eus2-01-rg. The same codes as ALZ CIDR Planner.
+
+/** Short region codes used in names. Locations not listed fall back to the full location name. */
+const REGION_CODES: Record<string, string> = {
+  australiacentral: 'auc',
+  australiacentral2: 'auc2',
+  australiaeast: 'aue',
+  australiasoutheast: 'ause',
+  austriaeast: 'ate',
+  belgiumcentral: 'bec',
+  brazilsouth: 'brs',
+  brazilsoutheast: 'brse',
+  canadacentral: 'cac',
+  canadaeast: 'cae',
+  centralindia: 'inc',
+  centralus: 'cus',
+  chilecentral: 'clc',
+  denmarkeast: 'dke',
+  eastasia: 'ea',
+  eastus: 'eus',
+  eastus2: 'eus2',
+  francecentral: 'frc',
+  francesouth: 'frs',
+  germanynorth: 'gn',
+  germanywestcentral: 'gwc',
+  indiasouthcentral: 'insc',
+  indonesiacentral: 'idc',
+  israelcentral: 'ilc',
+  italynorth: 'itn',
+  japaneast: 'jpe',
+  japanwest: 'jpw',
+  jioindiacentral: 'jinc',
+  jioindiawest: 'jinw',
+  koreacentral: 'krc',
+  koreasouth: 'krs',
+  malaysiawest: 'myw',
+  mexicocentral: 'mxc',
+  newzealandnorth: 'nzn',
+  northcentralus: 'ncus',
+  northeurope: 'neu',
+  norwayeast: 'nwe',
+  norwaywest: 'nww',
+  polandcentral: 'plc',
+  qatarcentral: 'qac',
+  southafricanorth: 'san',
+  southafricawest: 'saw',
+  southcentralus: 'scus',
+  southeastasia: 'sea',
+  southindia: 'ins',
+  spaincentral: 'spc',
+  swedencentral: 'sdc',
+  switzerlandnorth: 'szn',
+  switzerlandwest: 'szw',
+  uaecentral: 'uac',
+  uaenorth: 'uan',
+  uksouth: 'uks',
+  ukwest: 'ukw',
+  westcentralus: 'wcus',
+  westeurope: 'weu',
+  westindia: 'inw',
+  westus: 'wus',
+  westus2: 'wus2',
+  westus3: 'wus3',
+};
+
+const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+export const regionCode = (location: string) => REGION_CODES[location] ?? clean(location);
+
+/** <app>-<environment>-<region>-<int>-<type>; an empty environment is left out rather than leaving a double hyphen. */
+export const resourceName = (app: string, environment: string, location: string, type: string, instance = '01') =>
+  [app, clean(environment), regionCode(location), instance, type].filter(Boolean).join('-');

@@ -9,6 +9,7 @@
 
 import { BUILTIN_POLICY, canDeny, isAutomated, type Catalog, type Framework, type Member } from './catalog';
 import { familyOf } from './families';
+import { DEFAULT_PRIVATE_DNS_CATEGORIES } from './privateDns';
 
 export type MgRole =
   | 'root'
@@ -63,7 +64,10 @@ export interface DesignInput {
   cmk: boolean;
   /** Corp: deny public PaaS endpoints and deploy private DNS zone records. */
   privateCorp: boolean;
+  /** DDoS Network Protection plan association. Off by default: a plan costs about US$2,944 a month. */
   ddos: boolean;
+  /** Private DNS zone categories the IaC export creates (see privateDns.ts), when Corp is private-only. */
+  privateDnsZones: string[];
   /** Sovereignty baseline initiatives (allowed locations, confidential computing). */
   sovereignty: boolean;
 }
@@ -90,7 +94,8 @@ export const DEFAULT_INPUT: DesignInput = {
   backup: true,
   cmk: false,
   privateCorp: true,
-  ddos: true,
+  ddos: false,
+  privateDnsZones: DEFAULT_PRIVATE_DNS_CATEGORIES,
   sovereignty: false,
 };
 

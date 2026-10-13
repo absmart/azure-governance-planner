@@ -10,6 +10,7 @@ import {
   type IacFormat,
   buildIacModel,
   generateIacFiles,
+  placeholderOf,
   platformSummary,
   roleAssignmentCount,
   unsetInputs,
@@ -44,7 +45,7 @@ export function ExportDialog(props: { catalog: Catalog; design: Design; onClose:
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<StoredExport>(() => ({
     format: 'bicep',
-    environment: 'prod',
+    environment: 'prd',
     values: {},
     ...(readJson<Partial<StoredExport>>(STORAGE_KEYS.export) ?? {}),
   }));
@@ -155,7 +156,7 @@ export function ExportDialog(props: { catalog: Catalog; design: Design; onClose:
                     <input
                       className="mono"
                       value={settings.values[i.name] ?? ''}
-                      placeholder={i.placeholder}
+                      placeholder={placeholderOf(i, model, settings)}
                       onChange={(e) => setValue(i.name, e.target.value)}
                     />
                   </label>

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { portalInitiativeUrl, type Catalog } from '../lib/catalog';
+import { PRIVATE_DNS_CATEGORIES } from '../lib/privateDns';
 import type { Baseline, DesignInput, Enforcement, MgRole } from '../lib/engine';
 
 type BoolKey = { [K in keyof DesignInput]: DesignInput[K] extends boolean ? K : never }[keyof DesignInput];
@@ -34,7 +35,11 @@ const GUARDRAILS: { key: BoolKey; label: string; help: string }[] = [
   { key: 'monitoring', label: 'Central monitoring', help: 'Activity logs, diagnostic settings and Azure Monitor Agent to the central workspace.' },
   { key: 'backup', label: 'Backup and recovery', help: 'Azure Backup for VMs and Site Recovery.' },
   { key: 'privateCorp', label: 'Private-only Corp', help: 'Deny public PaaS endpoints in Corp and register private endpoints in central private DNS zones.' },
-  { key: 'ddos', label: 'DDoS Network Protection', help: 'Associate virtual networks with the hub DDoS protection plan.' },
+  {
+    key: 'ddos',
+    label: 'DDoS Network Protection',
+    help: 'Associate virtual networks with an existing DDoS protection plan. A plan costs about US$2,944 a month, so this is off by default.',
+  },
   { key: 'cmk', label: 'Customer-managed keys', help: 'Enforce encryption with customer-managed keys (ALZ ships it in DoNotEnforce).' },
   { key: 'sovereignty', label: 'Sovereignty baseline', help: 'Microsoft Cloud for Sovereignty global policies: allowed regions and Trusted Launch.' },
 ];
@@ -196,6 +201,25 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
           <div key={g.key}>{check(g.key, g.label, g.help)}</div>
         ))}
       </Section>
+
+      {input.privateCorp && (
+        <Section title="Private DNS zones">
+          <p className="muted">Created by the IaC export in the private DNS zone resource group, for private endpoints.</p>
+          {PRIVATE_DNS_CATEGORIES.map((c) => (
+            <label key={c.key} className="check" title={c.zones.join(', ')}>
+              <input
+                type="checkbox"
+                checked={input.privateDnsZones.includes(c.key)}
+                onChange={(e) =>
+                  set('privateDnsZones', e.target.checked ? [...input.privateDnsZones, c.key] : input.privateDnsZones.filter((k) => k !== c.key))
+                }
+              />
+              {c.label}
+              <span className="muted">{c.zones.length}</span>
+            </label>
+          ))}
+        </Section>
+      )}
 
       <Section title="Locations and tags">
         <label className="field">

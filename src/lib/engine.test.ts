@@ -58,7 +58,7 @@ describe('management groups', () => {
   });
 
   it('collapses the platform children when a single platform group is chosen', () => {
-    const d = design({ platform: 'single' });
+    const d = design({ platform: 'single', ddos: true });
     expect(d.mgs.map((m) => m.role)).not.toContain('connectivity');
     expect(find(d, 'Enable-DDoS-VNET')!.mg).toBe('platform');
     // Identity's Deny-Public-IP would block hub firewalls.
@@ -220,5 +220,13 @@ describe('families', () => {
     expect(familyOf('pci-dss-4', '10.2.1', fam).code).toBe('10');
     expect(familyOf('soc2', 'CC6.1', fam).code).toBe('CC');
     expect(familyOf('hipaa-hitrust', 'hipaa-0101.00a1Organizational.123-00.a', fam).code).toBe('00');
+  });
+});
+
+describe('defaults', () => {
+  it('leaves DDoS Network Protection off, for its cost', () => {
+    const d = design({});
+    expect(find(d, 'Enable-DDoS-VNET')).toBeUndefined();
+    expect(d.notes.some((n) => n.text.includes('DDoS Network Protection is turned off'))).toBe(true);
   });
 });

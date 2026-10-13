@@ -14,6 +14,8 @@
 
 import type { Catalog } from './catalog';
 import type { Design, PlannedAssignment } from './engine';
+import { resourceName } from './naming';
+import { privateDnsZones } from './privateDns';
 
 export type IacFormat = 'bicep' | 'terraform' | 'terragrunt';
 
@@ -120,6 +122,8 @@ export interface PlatformResources {
   dataCollectionRules: DataCollectionRule[];
   /** In the connectivity subscription: the resource group for the private DNS zones. */
   privateDnsResourceGroup: boolean;
+  /** Zones created in it; regional names carry {regionName}, filled in from the private DNS zone region. */
+  privateDnsZones: string[];
 }
 
 /**
@@ -152,11 +156,41 @@ export interface IacModel {
 const CREATED_INPUTS: Record<string, { creates: keyof PlatformResources; rule?: DataCollectionRule }> = {
   log_analytics_workspace_id: { creates: 'logAnalyticsWorkspace' },
   ama_user_assigned_managed_identity_id: { creates: 'userAssignedIdentity' },
-  ama_user_assigned_managed_identity_name: { creates: 'userAssignedIdentity' },
   ama_vm_insights_data_collection_rule_id: { creates: 'dataCollectionRules', rule: 'vmInsights' },
   ama_change_tracking_data_collection_rule_id: { creates: 'dataCollectionRules', rule: 'changeTracking' },
   ama_mdfc_sql_data_collection_rule_id: { creates: 'dataCollectionRules', rule: 'defenderSql' },
 };
+
+const RULE_NAME_INPUT: Record<DataCollectionRule, string> = {
+  vmInsights: 'vm_insights_data_collection_rule_name',
+  changeTracking: 'change_tracking_data_collection_rule_name',
+  defenderSql: 'defender_sql_data_collection_rule_name',
+};
+
+const ENVIRONMENT_TOKEN = '{environment}';
+const REGION_TOKEN = '{region}';
+
+/**
+ * Default resource names, <app>-<environment>-<region>-<int>-<type>. The
+ * environment and region are filled in from the export's environment and
+ * location, so the defaults follow them.
+ */
+const NAME_DEFAULTS: Record<string, string> = Object.fromEntries(
+  (
+    [
+      ['management_resource_group_name', 'management', 'rg'],
+      ['log_analytics_workspace_name', 'management', 'log'],
+      ['ama_user_assigned_managed_identity_name', 'ama', 'id'],
+      ['vm_insights_data_collection_rule_name', 'vminsights', 'dcr'],
+      ['change_tracking_data_collection_rule_name', 'changetracking', 'dcr'],
+      ['defender_sql_data_collection_rule_name', 'defendersql', 'dcr'],
+      ['private_dns_zone_resource_group_name', 'privatedns', 'rg'],
+      // Resource groups ALZ's DeployIfNotExists policies create in each subscription.
+      ['resource_group_name_mdfc', 'mdfcexport', 'rg'],
+      ['resource_group_name_service_health_alerts', 'servicehealth', 'rg'],
+    ] as const
+  ).map(([input, app, type]) => [input, `${app}-${ENVIRONMENT_TOKEN}-${REGION_TOKEN}-01-${type}`]),
+);
 
 const PRIVATE_DNS_INPUTS = new Set(['private_dns_zone_subscription_id', 'private_dns_zone_resource_group_name']);
 
@@ -166,7 +200,11 @@ const RESOURCE_ID_INPUTS = new Set(['ddos_protection_plan_id']);
 const NEW_INPUT_DESCRIPTION: Record<string, string> = {
   management_subscription_id: 'The management subscription, for the Log Analytics workspace, data collection rules and AMA identity.',
   management_resource_group_name: 'Resource group created in the management subscription for those resources.',
-  management_name_prefix: 'Prefix of their names: law-<prefix>-<location>, uami-<prefix>-ama, dcr-<prefix>-<rule>.',
+  log_analytics_workspace_name: 'Name of the Log Analytics workspace created in the management resource group.',
+  ama_user_assigned_managed_identity_name: 'Name of the user-assigned identity Azure Monitor Agent authenticates with (created in the management resource group).',
+  vm_insights_data_collection_rule_name: 'Name of the VM Insights data collection rule.',
+  change_tracking_data_collection_rule_name: 'Name of the Change Tracking and Inventory data collection rule.',
+  defender_sql_data_collection_rule_name: 'Name of the Defender for SQL data collection rule.',
   private_dns_zone_resource_group_name: 'Resource group created in the private DNS zone subscription for the private link DNS zones.',
 };
 
@@ -304,6 +342,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     userAssignedIdentity: false,
     dataCollectionRules: [],
     privateDnsResourceGroup: false,
+    privateDnsZones: [],
   };
   for (const name of inputUse.keys()) {
     const created = CREATED_INPUTS[name];
@@ -311,6 +350,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     else if (created) platform[created.creates as 'logAnalyticsWorkspace' | 'userAssignedIdentity'] = true;
     if (PRIVATE_DNS_INPUTS.has(name)) platform.privateDnsResourceGroup = true;
   }
+  if (platform.privateDnsResourceGroup) platform.privateDnsZones = privateDnsZones(design.input.privateDnsZones ?? [], '{regionName}');
   // Data collection rules send to the workspace.
   if (platform.dataCollectionRules.length) platform.logAnalyticsWorkspace = true;
   platform.dataCollectionRules.sort();
@@ -335,8 +375,12 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
   if (!inputUse.has('location')) inputUse.set('location', new Set());
   for (const name of Object.keys(CREATED_INPUTS)) inputUse.delete(name);
   if (management)
-    for (const name of ['management_subscription_id', 'management_resource_group_name', 'management_name_prefix'])
-      inputUse.set(name, new Set());
+    for (const name of ['management_subscription_id', 'management_resource_group_name']) inputUse.set(name, new Set());
+  // Names of the created resources.
+  if (platform.logAnalyticsWorkspace) inputUse.set('log_analytics_workspace_name', new Set());
+  if (platform.userAssignedIdentity && !inputUse.has('ama_user_assigned_managed_identity_name'))
+    inputUse.set('ama_user_assigned_managed_identity_name', new Set());
+  for (const rule of platform.dataCollectionRules) inputUse.set(RULE_NAME_INPUT[rule], new Set());
   const describe = new Map(library.defaults.map((d) => [d.default_name, d.description]));
   const defaultValue = (name: string): string => {
     switch (name) {
@@ -345,13 +389,8 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
         return location;
       case 'management_subscription_id':
         return '';
-      case 'management_resource_group_name':
-        return `rg-${root.id}-management-${location}`;
-      case 'management_name_prefix':
-        return root.id;
-      case 'private_dns_zone_resource_group_name':
-        return `rg-${root.id}-private-dns-${location}`;
       default:
+        if (NAME_DEFAULTS[name]) return NAME_DEFAULTS[name];
         return (placeholders.get(name) ?? '').replace(LOCATION_TOKEN, location);
     }
   };
@@ -411,15 +450,24 @@ function rolesFor(a: PlannedAssignment, catalog: Catalog, library: AlzLibrary): 
   return [...roles].sort();
 }
 
+/** An input's default for these options: resource names follow the environment and location. */
+export function placeholderOf(input: IacInput, model: IacModel, options: ExportOptions): string {
+  if (!input.placeholder.includes(ENVIRONMENT_TOKEN)) return input.placeholder;
+  const location = model.inputs.find((i) => i.name === 'location');
+  const region = (location && (options.values.location?.trim() || location.placeholder)) || 'eastus2';
+  const [app, , , instance, type] = input.placeholder.split('-');
+  return resourceName(app, options.environment, region, type, instance);
+}
+
 /** The value an input deploys with. */
-export function inputValue(input: IacInput, options: ExportOptions): string {
-  return options.values[input.name]?.trim() || input.placeholder;
+export function inputValue(input: IacInput, model: IacModel, options: ExportOptions): string {
+  return options.values[input.name]?.trim() || placeholderOf(input, model, options);
 }
 
 /** Inputs still at an ALZ placeholder (or empty), which deploy but point at nothing. */
 export function unsetInputs(model: IacModel, options: ExportOptions): IacInput[] {
   return model.inputs.filter((i) => {
-    const v = inputValue(i, options);
+    const v = inputValue(i, model, options);
     return !v || PLACEHOLDER.test(v) || /replace_me|^defaultString/i.test(v);
   });
 }
@@ -434,7 +482,14 @@ function commentBlock(prefix: string, lines: string[]): string {
 
 const json = (value: unknown) => JSON.stringify(value, null, 2) + '\n';
 
-const environmentOf = (options: ExportOptions) => options.environment.trim().replace(/[^A-Za-z0-9_-]+/g, '-') || 'prod';
+/** The platform resources for these options: regional zone names for the private DNS zone region. */
+function platformFor(model: IacModel, options: ExportOptions): PlatformResources {
+  const region = model.inputs.find((i) => i.name === 'private_dns_zone_region');
+  const name = (region ? inputValue(region, model, options) : 'eastus2').toLowerCase();
+  return { ...model.platform, privateDnsZones: [...new Set(model.platform.privateDnsZones.map((z) => z.replace('{regionName}', name)))] };
+}
+
+const environmentOf = (options: ExportOptions) => options.environment.trim().replace(/[^A-Za-z0-9_-]+/g, '-') || 'prd';
 
 /** The platform resources the export creates, in a phrase ("" for none). */
 export function platformSummary(model: IacModel): string {
@@ -448,7 +503,9 @@ export function platformSummary(model: IacModel): string {
   const management = parts.length
     ? `${parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0]} in the management subscription`
     : '';
-  const dns = platform.privateDnsResourceGroup ? 'the private DNS zone resource group' : '';
+  const dns = platform.privateDnsResourceGroup
+    ? `the private DNS zone resource group${platform.privateDnsZones.length ? ` with ${platform.privateDnsZones.length} private link zones` : ''}`
+    : '';
   return [management, dns].filter(Boolean).join(', and ');
 }
 
@@ -516,32 +573,33 @@ var rootId = managementGroups[0].id
 var defaultParent = empty(parentManagementGroupId) ? tenant().tenantId : parentManagementGroupId
 
 // Platform resources. Their IDs are built from names, so the policies can use them before they exist.
-var platform = union({ logAnalyticsWorkspace: false, userAssignedIdentity: false, dataCollectionRules: [], privateDnsResourceGroup: false }, platformResources)
+var platform = union(
+  { logAnalyticsWorkspace: false, userAssignedIdentity: false, dataCollectionRules: [], privateDnsResourceGroup: false, privateDnsZones: [] },
+  platformResources
+)
 var deployManagement = platform.logAnalyticsWorkspace || platform.userAssignedIdentity
 // Conditional modules still need a valid scope.
 var unusedSubscription = '00000000-0000-0000-0000-000000000000'
 var management = {
   subscriptionId: deployManagement ? policyValues.management_subscription_id : unusedSubscription
   resourceGroupName: policyValues.?management_resource_group_name ?? 'unused'
-  prefix: policyValues.?management_name_prefix ?? rootId
 }
 var privateDns = {
   subscriptionId: platform.privateDnsResourceGroup ? policyValues.private_dns_zone_subscription_id : unusedSubscription
   resourceGroupName: policyValues.?private_dns_zone_resource_group_name ?? 'unused'
 }
 var names = {
-  workspace: 'law-\${management.prefix}-\${location}'
-  identity: 'uami-\${management.prefix}-ama'
-  vmInsights: 'dcr-\${management.prefix}-vminsights'
-  changeTracking: 'dcr-\${management.prefix}-changetracking'
-  defenderSql: 'dcr-\${management.prefix}-defendersql'
+  workspace: policyValues.?log_analytics_workspace_name ?? 'unused'
+  identity: policyValues.?ama_user_assigned_managed_identity_name ?? 'unused'
+  vmInsights: policyValues.?vm_insights_data_collection_rule_name ?? 'unused'
+  changeTracking: policyValues.?change_tracking_data_collection_rule_name ?? 'unused'
+  defenderSql: policyValues.?defender_sql_data_collection_rule_name ?? 'unused'
 }
 var managementGroupScope = '/subscriptions/\${management.subscriptionId}/resourceGroups/\${management.resourceGroupName}'
 var platformValues = deployManagement
   ? {
       log_analytics_workspace_id: '\${managementGroupScope}/providers/Microsoft.OperationalInsights/workspaces/\${names.workspace}'
       ama_user_assigned_managed_identity_id: '\${managementGroupScope}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/\${names.identity}'
-      ama_user_assigned_managed_identity_name: names.identity
       ama_vm_insights_data_collection_rule_id: '\${managementGroupScope}/providers/Microsoft.Insights/dataCollectionRules/\${names.vmInsights}'
       ama_change_tracking_data_collection_rule_id: '\${managementGroupScope}/providers/Microsoft.Insights/dataCollectionRules/\${names.changeTracking}'
       ama_mdfc_sql_data_collection_rule_id: '\${managementGroupScope}/providers/Microsoft.Insights/dataCollectionRules/\${names.defenderSql}'
@@ -581,6 +639,15 @@ module privateDnsResourceGroup 'modules/resource-group.bicep' = if (platform.pri
   }
 }
 
+module privateDnsZones 'modules/private-dns-zones.bicep' = if (platform.privateDnsResourceGroup && !empty(platform.privateDnsZones)) {
+  name: take('private-dns-zones-\${rootId}', 64)
+  scope: resourceGroup(privateDns.subscriptionId, privateDns.resourceGroupName)
+  params: {
+    zones: platform.privateDnsZones
+  }
+  dependsOn: [privateDnsResourceGroup]
+}
+
 // One at a time, in order, so each parent exists before its children.
 @batchSize(1)
 resource mgs 'Microsoft.Management/managementGroups@2023-04-01' = [
@@ -616,7 +683,7 @@ module assignments 'modules/policy-assignments.bicep' = [
       policyValues: values
       policyAssignments: filter(policyAssignments, a => a.managementGroupId == mg.id)
     }
-    dependsOn: [definitions, managementResources, privateDnsResourceGroup]
+    dependsOn: [definitions, managementResources, privateDnsResourceGroup, privateDnsZones]
   }
 ]
 
@@ -664,6 +731,25 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: name
   location: location
 }
+`;
+}
+
+export function toBicepPrivateDnsZonesModule(): string {
+  return `${commentBlock('//', [
+    'Private link DNS zones. Link them to the hub virtual network(s) so workloads resolve',
+    'private endpoints; ALZ\'s Deploy-Private-DNS-Zones policy adds the records.',
+    GENERATOR,
+  ])}
+targetScope = 'resourceGroup'
+
+param zones array
+
+resource zone 'Microsoft.Network/privateDnsZones@2024-06-01' = [
+  for name in zones: {
+    name: name
+    location: 'global'
+  }
+]
 `;
 }
 
@@ -1029,7 +1115,7 @@ export function toBicepParams(model: IacModel, options: ExportOptions): string {
   const unset = new Set(unsetInputs(model, options).map((i) => i.name));
   const lines = values.flatMap((i) => [
     `  // ${i.description}${unset.has(i.name) ? ' SET THIS: still the ALZ placeholder.' : ''}`,
-    `  ${i.name}: ${bicepString(inputValue(i, options))}`,
+    `  ${i.name}: ${bicepString(inputValue(i, model, options))}`,
   ]);
   return `${commentBlock('//', [
     `${model.rootName}, ${env} environment. ${GENERATOR}`,
@@ -1037,11 +1123,11 @@ export function toBicepParams(model: IacModel, options: ExportOptions): string {
     ...summaryLines(model),
     '',
     'Deploy:',
-    `  az deployment tenant create --name governance-${env} --location ${location ? inputValue(location, options) : 'eastus2'} --parameters ${env}.bicepparam`,
+    `  az deployment tenant create --name governance-${env} --location ${location ? inputValue(location, model, options) : 'eastus2'} --parameters ${env}.bicepparam`,
   ])}
 using 'main.bicep'
 
-param location = ${bicepString(location ? inputValue(location, options) : 'eastus2')}
+param location = ${bicepString(location ? inputValue(location, model, options) : 'eastus2')}
 
 param policyValues = {
 ${lines.join('\n')}
@@ -1204,6 +1290,7 @@ variable "platform_resources" {
     user_assigned_identity     = optional(bool, false)
     data_collection_rules      = optional(list(string), [])
     private_dns_resource_group = optional(bool, false)
+    private_dns_zones          = optional(list(string), [])
   })
   default = {}
 }
@@ -1321,13 +1408,12 @@ resource "azurerm_management_group_policy_set_definition" "this" {
 locals {
   platform          = var.platform_resources
   deploy_management = local.platform.log_analytics_workspace || local.platform.user_assigned_identity
-  management_prefix = lookup(var.policy_values, "management_name_prefix", local.root_id)
   names = {
-    workspace       = "law-\${local.management_prefix}-\${var.location}"
-    identity        = "uami-\${local.management_prefix}-ama"
-    vm_insights     = "dcr-\${local.management_prefix}-vminsights"
-    change_tracking = "dcr-\${local.management_prefix}-changetracking"
-    defender_sql    = "dcr-\${local.management_prefix}-defendersql"
+    workspace       = lookup(var.policy_values, "log_analytics_workspace_name", null)
+    identity        = lookup(var.policy_values, "ama_user_assigned_managed_identity_name", null)
+    vm_insights     = lookup(var.policy_values, "vm_insights_data_collection_rule_name", null)
+    change_tracking = lookup(var.policy_values, "change_tracking_data_collection_rule_name", null)
+    defender_sql    = lookup(var.policy_values, "defender_sql_data_collection_rule_name", null)
   }
   # Workspace solutions each data collection rule's data needs.
   solutions_by_rule = {
@@ -1506,13 +1592,21 @@ resource "azurerm_resource_group" "private_dns" {
   location = var.location
 }
 
+# Private link DNS zones. Link them to the hub virtual network(s) so workloads
+# resolve private endpoints; ALZ's Deploy-Private-DNS-Zones policy adds the records.
+resource "azurerm_private_dns_zone" "this" {
+  for_each            = local.platform.private_dns_resource_group ? toset(local.platform.private_dns_zones) : toset([])
+  provider            = azurerm.connectivity
+  name                = each.key
+  resource_group_name = azurerm_resource_group.private_dns[0].name
+}
+
 locals {
   # The created resources' IDs, for the policy parameters that point at them.
   platform_values = {
     for k, v in {
       log_analytics_workspace_id                  = one(azurerm_log_analytics_workspace.this[*].id)
       ama_user_assigned_managed_identity_id       = one(azurerm_user_assigned_identity.ama[*].id)
-      ama_user_assigned_managed_identity_name     = one(azurerm_user_assigned_identity.ama[*].name)
       ama_vm_insights_data_collection_rule_id     = one(azurerm_monitor_data_collection_rule.vm_insights[*].id)
       ama_change_tracking_data_collection_rule_id = one(azurerm_monitor_data_collection_rule.change_tracking[*].id)
       ama_mdfc_sql_data_collection_rule_id        = one(azurerm_monitor_data_collection_rule.defender_sql[*].id)
@@ -1552,7 +1646,7 @@ resource "azurerm_management_group_policy_assignment" "this" {
     }
   }
 
-  depends_on = [azurerm_policy_definition.this, azurerm_management_group_policy_set_definition.this]
+  depends_on = [azurerm_policy_definition.this, azurerm_management_group_policy_set_definition.this, azurerm_private_dns_zone.this]
 }
 
 # Roles the assignments' managed identities need for remediation.
@@ -1626,7 +1720,8 @@ function hclJson(value: unknown, indent = ''): string {
 const jsonString = (value: unknown) => (value === undefined || value === null ? undefined : JSON.stringify(value));
 
 /** The design as Terraform variable values (design.auto.tfvars.json / Terragrunt design.json). */
-export function toTerraformDesign(model: IacModel): string {
+export function toTerraformDesign(model: IacModel, options: ExportOptions): string {
+  const platform = platformFor(model, options);
   return json({
     management_groups: model.managementGroups.map((m) => ({ id: m.id, display_name: m.displayName, parent_id: m.parentId })),
     policy_definitions: model.policyDefinitions.map((d) => ({
@@ -1662,6 +1757,7 @@ export function toTerraformDesign(model: IacModel): string {
       user_assigned_identity: model.platform.userAssignedIdentity,
       data_collection_rules: model.platform.dataCollectionRules,
       private_dns_resource_group: model.platform.privateDnsResourceGroup,
+      private_dns_zones: platform.privateDnsZones,
     },
     platform_role_assignments: model.platformRoleAssignments.map((g) => ({
       management_group_id: g.managementGroupId,
@@ -1694,12 +1790,12 @@ function terraformValues(model: IacModel, options: ExportOptions): string[] {
   const values = model.inputs.filter((i) => i.name !== 'location');
   const unset = new Set(unsetInputs(model, options).map((i) => i.name));
   return [
-    `location = ${tq(location ? inputValue(location, options) : 'eastus2')}`,
+    `location = ${tq(location ? inputValue(location, model, options) : 'eastus2')}`,
     '',
     'policy_values = {',
     ...values.flatMap((i) => [
       `  # ${i.description}${unset.has(i.name) ? ' SET THIS: still the ALZ placeholder.' : ''}`,
-      `  ${i.name} = ${tq(inputValue(i, options))}`,
+      `  ${i.name} = ${tq(inputValue(i, model, options))}`,
     ]),
     '}',
   ];
@@ -1833,7 +1929,11 @@ function platformSection(model: IacModel): string {
     management.length &&
       `  - in the management subscription, a resource group with ${management.join(', ')}. The policies' parameters point at them;`,
     platform.privateDnsResourceGroup &&
-      '  - in the private DNS zone subscription, the resource group for the private link DNS zones. Create the zones in it (or link existing ones): the policy adds records to them, it does not create them;',
+      `  - in the private DNS zone subscription, the resource group for the private link DNS zones${
+        platform.privateDnsZones.length
+          ? `, with ${platform.privateDnsZones.length} zones (${platform.privateDnsZones.join(', ')}). Link them to your hub virtual network(s); ALZ's policy adds the private endpoint records`
+          : '. Create the zones in it: the policy adds records to them, it does not create them'
+      };`,
   ].filter(Boolean);
   return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
 }
@@ -1955,9 +2055,10 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'modules/policy-assignments.bicep', content: toBicepAssignmentsModule(), description: 'module' },
         { name: 'modules/management-resources.bicep', content: toBicepManagementModule(), description: 'module' },
         { name: 'modules/resource-group.bicep', content: toBicepResourceGroupModule(), description: 'module' },
+        { name: 'modules/private-dns-zones.bicep', content: toBicepPrivateDnsZonesModule(), description: 'module' },
         { name: 'modules/role-assignment.bicep', content: toBicepRoleAssignmentModule(), description: 'module' },
         { name: 'lib/management-groups.json', content: json(model.managementGroups), description: 'design' },
-        { name: 'lib/platform-resources.json', content: json(model.platform), description: 'design' },
+        { name: 'lib/platform-resources.json', content: json(platformFor(model, options)), description: 'design' },
         { name: 'lib/platform-role-assignments.json', content: json(model.platformRoleAssignments), description: 'design' },
         { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
         { name: 'lib/policy-set-definitions.json', content: json(model.policySetDefinitions), description: 'design' },
@@ -1968,7 +2069,7 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
       return [
         { name: 'main.tf', content: toTerraform(), description: 'generic module' },
         { name: `${env}.tfvars`, content: toTfvars(model, options), description: 'values for this environment' },
-        { name: 'design.auto.tfvars.json', content: toTerraformDesign(model), description: 'design' },
+        { name: 'design.auto.tfvars.json', content: toTerraformDesign(model, options), description: 'design' },
         { name: 'README.md', content: terraformReadme(model, options), description: 'how to deploy' },
       ];
     case 'terragrunt':
@@ -1976,7 +2077,7 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'root.hcl', content: toTerragruntRoot(), description: 'shared state and provider' },
         { name: 'modules/governance/main.tf', content: toTerraform({ terragrunt: true }), description: 'generic module' },
         { name: `${terragruntLiveDir(env)}/terragrunt.hcl`, content: toTerragruntLive(model, options), description: 'values for this environment' },
-        { name: `${terragruntLiveDir(env)}/design.json`, content: toTerraformDesign(model), description: 'design' },
+        { name: `${terragruntLiveDir(env)}/design.json`, content: toTerraformDesign(model, options), description: 'design' },
         { name: 'README.md', content: terragruntReadme(model, options), description: 'how to deploy' },
       ];
   }

@@ -51,4 +51,4 @@ npx --yes @azure/static-web-apps-cli@2.0.2 deploy ./dist --env production
 - [AzAdvertizer](https://www.azadvertizer.net) policy metadata
 - [NIST OSCAL content](https://github.com/usnistgov/oscal-content) for SP 800-53 control titles and SP 800-53B baselines
 
-Re-run it to pick up new built-in policies and ALZ library releases.
+Every Monday, [.github/workflows/update-catalog.yml](.github/workflows/update-catalog.yml) moves `ALZ_REF` to the latest ALZ library release, re-runs the script, tests and builds, and opens a pull request (`automated/update-catalog`) summarizing what changed, when anything did. Merging it deploys the app. It can also be run by hand from the Actions tab, and `node scripts/catalog-diff.mjs <old> <new>` prints the same summary locally.

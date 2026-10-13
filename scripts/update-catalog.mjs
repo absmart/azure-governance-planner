@@ -15,7 +15,7 @@
 // library's definitions and assignment parameters, which only the IaC export
 // needs, go to public/alz-library.json so the app loads them on demand.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -413,6 +413,11 @@ const catalog = {
   policies,
 };
 
+// Keep the previous date when nothing else changed, so an unchanged catalog
+// leaves the file as it is (the scheduled update only opens a PR for real changes).
+const previous = existsSync(out) ? JSON.parse(readFileSync(out, 'utf8')) : null;
+if (previous && JSON.stringify({ ...previous, generated: null }) === JSON.stringify({ ...catalog, generated: null }))
+  catalog.generated = previous.generated;
 writeFileSync(out, JSON.stringify(catalog) + '\n');
 
 const strip = (def) => ({ name: def.name, properties: def.properties });

@@ -1,0 +1,99 @@
+# Refreshes the policy catalog every week: moves to the latest ALZ library
+# release, runs `npm run update-catalog`, tests and builds, and opens (or
+# updates) a pull request when the data changed. Merging it deploys the app.
+#
+# Needs "Allow GitHub Actions to create and approve pull requests" in the
+# repository's Actions settings.
+
+name: Update catalog
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: update-catalog
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Use the latest ALZ library release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api 'repos/Azure/Azure-Landing-Zones-Library/releases?per_page=100' \
+            --jq '[.[] | select(.tag_name | startswith("platform/alz/")) | select(.prerelease | not) | select(.draft | not)][0].tag_name')
+          if [ -z "$latest" ]; then echo "No ALZ release found"; exit 1; fi
+          echo "Latest ALZ library release: $latest"
+          sed -i "s#^const ALZ_REF = '.*';#const ALZ_REF = '${latest}';#" scripts/update-catalog.mjs
+
+      - name: Update the catalog
+        run: |
+          cp src/data/catalog.json "$RUNNER_TEMP/catalog.before.json"
+          npm run update-catalog
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "No changes."; fi
+
+      - name: Test
+        id: test
+        if: steps.changes.outputs.changed == 'true'
+        continue-on-error: true
+        run: npm test
+
+      - name: Build
+        id: build
+        if: steps.changes.outputs.changed == 'true'
+        continue-on-error: true
+        run: npm run build
+
+      - name: Describe the changes
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          {
+            echo "Weekly refresh of the policy catalog from AzAdvertizer, Azure/azure-policy, the ALZ library and NIST OSCAL."
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| \`npm test\` | ${{ steps.test.outcome == 'success' && '✅ passed' || '❌ failed: see the workflow run' }} |"
+            echo "| \`npm run build\` | ${{ steps.build.outcome == 'success' && '✅ passed' || '❌ failed: see the workflow run' }} |"
+            echo
+            echo "## What changed"
+            echo
+            node scripts/catalog-diff.mjs "$RUNNER_TEMP/catalog.before.json" src/data/catalog.json
+            echo
+            echo "[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automated/update-catalog
+          delete-branch: true
+          title: Update policy catalog
+          commit-message: Update policy catalog
+          body-path: ${{ runner.temp }}/body.md
+          add-paths: |
+            src/data/catalog.json
+            public/alz-library.json
+            scripts/update-catalog.mjs

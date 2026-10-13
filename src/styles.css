@@ -1206,3 +1206,52 @@ button:disabled {
   color: var(--error);
   background: var(--error-bg);
 }
+
+/* Privileged access */
+
+.pim h3 {
+  margin: 16px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.pim header label.check {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.pim-profile {
+  margin-top: 10px;
+}
+
+table.pim-settings td.current {
+  font-weight: 600;
+}
+
+.pim .add-eligibility {
+  margin-top: 8px;
+}
+
+.pim .add-eligibility input {
+  flex: 1 1 240px;
+}
+
+.pim-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px 16px;
+}
+
+.pim-controls ul,
+.pim-notes {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.pim td.actions {
+  text-align: right;
+}

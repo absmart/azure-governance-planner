@@ -9,6 +9,7 @@
 
 import { BUILTIN_POLICY, canDeny, isAutomated, type Catalog, type Framework, type Member } from './catalog';
 import { familyOf } from './families';
+import { DEFAULT_PIM, buildPim, type PimDesign, type PimInput } from './pim';
 import { DEFAULT_PRIVATE_DNS_CATEGORIES } from './privateDns';
 
 export type MgRole =
@@ -121,6 +122,8 @@ export interface DesignInput {
   sovereignty: boolean;
   overrides: Record<string, AssignmentOverride>;
   exemptions: Exemption[];
+  /** Privileged Identity Management for Azure resource roles. */
+  pim: PimInput;
 }
 
 export const DEFAULT_INPUT: DesignInput = {
@@ -155,6 +158,7 @@ export const DEFAULT_INPUT: DesignInput = {
   sovereignty: false,
   overrides: {},
   exemptions: [],
+  pim: DEFAULT_PIM,
 };
 
 export const GOV_LOCATIONS = ['usgovvirginia', 'usgovtexas', 'usgovarizona', 'usdodeast', 'usdodcentral'];
@@ -254,6 +258,8 @@ export interface Design {
   coverage: FrameworkCoverage[];
   policies: PolicyRow[];
   notes: Note[];
+  /** Privileged Identity Management, or null when it's off. */
+  pim: PimDesign | null;
   stats: {
     managementGroups: number;
     assignments: number;
@@ -891,6 +897,13 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       text: `${overridden} assignment override${overridden === 1 ? '' : 's'} and ${exempted} exemption${exempted === 1 ? '' : 's'}. Control coverage counts enforcement modes and removals, not excluded scopes or exemptions.`,
     });
 
+  const pim = buildPim(
+    input.pim ?? DEFAULT_PIM,
+    frameworks.filter((f) => assigned.has(f.key)),
+    input.nistBaseline,
+    new Set(mgs.map((m) => m.role)),
+  );
+
   const allAssignments = mgs.flatMap((m) => m.assignments);
   const assignedPolicies = new Set(allAssignments.flatMap((a) => a.policies.map((m) => m.p)));
   return {
@@ -899,6 +912,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     coverage,
     policies: [...rows.values()],
     notes,
+    pim,
     stats: {
       managementGroups: mgs.length,
       assignments: allAssignments.length,

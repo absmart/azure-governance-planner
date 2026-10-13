@@ -114,6 +114,23 @@ export interface IacAssignment {
   notScopes: string[];
 }
 
+export interface IacPim {
+  profile: 'standard' | 'high';
+  activationMaximumDuration: string;
+  requireMfa: boolean;
+  requireJustification: boolean;
+  requireTicket: boolean;
+  eligibleExpireAfter: string;
+  activeExpireAfter: string;
+  /** Length of the eligible assignments the export makes, in days (within eligibleExpireAfter). */
+  eligibleDurationDays: number;
+  accessReview: 'monthly' | 'quarterly';
+  /** Management groups whose role settings are set. */
+  managementGroupIds: string[];
+  roles: { name: string; roleDefinitionId: string; requireApproval: boolean }[];
+  eligibilities: { name: string; roleName: string; roleDefinitionId: string; managementGroupId: string; input: string }[];
+}
+
 /** A policy exemption, at a management group, subscription or resource group. */
 export interface IacExemption {
   name: string;
@@ -181,6 +198,8 @@ export interface IacModel {
    * (the parking lot) and whether creating management groups needs permission.
    */
   hierarchySettings: { defaultManagementGroupId: string; requireAuthorizationForGroupCreation: boolean } | null;
+  /** Privileged Identity Management: role settings at every management group, and eligible assignments. */
+  pim: IacPim | null;
   /** "public" or "usgovernment" (the Terraform provider's environment). */
   cloud: 'public' | 'usgovernment';
   exemptions: IacExemption[];
@@ -253,6 +272,7 @@ const NEW_INPUT_DESCRIPTION: Record<string, string> = {
   change_tracking_data_collection_rule_name: 'Name of the Change Tracking and Inventory data collection rule.',
   defender_sql_data_collection_rule_name: 'Name of the Defender for SQL data collection rule.',
   private_dns_zone_resource_group_name: 'Resource group created in the private DNS zone subscription for the private link DNS zones.',
+  pim_approver_group_id: 'Object ID of the Entra ID group that approves privileged role activations (PIM). Without it, activations need no approval.',
 };
 
 /** The export dialog's settings: the format plus the options. */
@@ -528,6 +548,37 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
       subscriptionPlacements.push({ managementGroupId: mgOf('connectivity')!, input: 'private_dns_zone_subscription_id' });
   }
 
+  // PIM: the approver group and each eligible group are per-environment object IDs.
+  const pimDesign = design.pim;
+  const pimGroupInput = (id: string) => `pim_group_${id.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`;
+  const pimDescriptions = new Map<string, string>();
+  let pim: IacPim | null = null;
+  if (pimDesign) {
+    if (pimDesign.roles.some((r) => r.requireApproval)) inputUse.set('pim_approver_group_id', new Set());
+    const eligibilities = pimDesign.eligibilities.map((e) => {
+      const role = pimDesign.roles.find((r) => r.key === e.role)!;
+      const input = pimGroupInput(e.id);
+      inputUse.set(input, new Set());
+      pimDescriptions.set(input, `Object ID of the Entra ID group "${e.label}", made eligible for ${role.name} at ${mgIdOf(e.mg)} (PIM).`);
+      return { name: e.label, roleName: role.name, roleDefinitionId: role.roleDefinitionId, managementGroupId: mgIdOf(e.mg), input };
+    });
+    const st = pimDesign.settings;
+    pim = {
+      profile: pimDesign.profile,
+      activationMaximumDuration: st.activationMaximumDuration,
+      requireMfa: st.requireMfa,
+      requireJustification: st.requireJustification,
+      requireTicket: st.requireTicket,
+      eligibleExpireAfter: st.eligibleExpireAfter,
+      activeExpireAfter: st.activeExpireAfter,
+      eligibleDurationDays: Number(/P(\d+)D/.exec(st.eligibleExpireAfter)?.[1] ?? 180),
+      accessReview: st.accessReview,
+      managementGroupIds: managementGroups.map((m) => m.id),
+      roles: pimDesign.roles.map((r) => ({ name: r.name, roleDefinitionId: r.roleDefinitionId, requireApproval: r.requireApproval })),
+      eligibilities,
+    };
+  }
+
   const describe = new Map(library.defaults.map((d) => [d.default_name, d.description]));
   const defaultValue = (name: string): string => {
     switch (name) {
@@ -536,9 +587,11 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
         return location;
       case 'management_subscription_id':
       case 'platform_subscription_id':
+      case 'pim_approver_group_id':
         return '';
       default:
         if (NAME_DEFAULTS[name]) return NAME_DEFAULTS[name];
+        if (name.startsWith('pim_group_')) return '';
         return (placeholders.get(name) ?? '').replace(LOCATION_TOKEN, location);
     }
   };
@@ -547,7 +600,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     description:
       name === 'location'
         ? 'Region for the platform resources, the policy assignments’ managed identities and the resources their remediation deploys.'
-        : (NEW_INPUT_DESCRIPTION[name] ?? describe.get(name) ?? name),
+        : (NEW_INPUT_DESCRIPTION[name] ?? pimDescriptions.get(name) ?? describe.get(name) ?? name),
     placeholder: defaultValue(name),
     usedBy: [...users],
   }));
@@ -565,6 +618,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     platform,
     platformRoleAssignments,
     cloud: gov ? 'usgovernment' : 'public',
+    pim,
     hierarchySettings: design.input.parkingLot
       ? {
           defaultManagementGroupId: mgIdOf('parkinglot'),
@@ -729,6 +783,9 @@ param policyExemptions array = []
 
 @description('Tenant hierarchy settings: { defaultManagementGroupId, requireAuthorizationForGroupCreation }. Empty to leave them as they are.')
 param hierarchySettings object = {}
+
+@description('PIM: { eligibleDurationDays, eligibilities: [{ name, roleDefinitionId, managementGroupId, input }] }. Role settings are set by scripts/set-pim-policies.sh.')
+param pim object = {}
 
 @description('Platform resources to create for the policies to point at: { logAnalyticsWorkspace, userAssignedIdentity, dataCollectionRules, privateDnsResourceGroup }.')
 param platformResources object = {}
@@ -914,6 +971,20 @@ resource subscriptionPlacement 'Microsoft.Management/managementGroups/subscripti
   }
 ]
 
+// PIM eligible assignments: groups (object IDs in policyValues) that can activate a privileged role.
+module pimEligibility 'modules/pim-eligibility.bicep' = [
+  for mg in managementGroups: if (!empty(pim)) {
+    name: take('pim-eligibility-\${mg.id}', 64)
+    scope: managementGroup(mg.id)
+    params: {
+      eligibilities: filter(pim.?eligibilities ?? [], e => e.managementGroupId == mg.id && !empty(values[?e.input] ?? ''))
+      policyValues: values
+      durationDays: pim.?eligibleDurationDays ?? 180
+    }
+    dependsOn: [mgs]
+  }
+]
+
 // Exemptions, at their scope. They point at the assignments by ID, after those exist.
 var exemptionsAt = {
   managementGroup: filter(policyExemptions, e => e.scope.kind == 'managementGroup')
@@ -1014,6 +1085,103 @@ resource policyExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-pr
     expiresOn: exemption.?expiresOn
   }
 }
+`;
+}
+
+export function toBicepPimModule(): string {
+  return `${commentBlock('//', ['PIM eligible role assignments at one management group.', GENERATOR])}
+targetScope = 'managementGroup'
+
+@description('{ name, roleDefinitionId, managementGroupId, input }: input names the policyValues key with the group object ID.')
+param eligibilities array
+param policyValues object
+@description('How long the eligible assignments last.')
+param durationDays int
+param startDateTime string = utcNow()
+
+// Re-deploying an unchanged request fails with RoleAssignmentExists; remove it from
+// the parameters (or extend it in PIM) once it exists.
+resource eligibility 'Microsoft.Authorization/roleEligibilityScheduleRequests@2022-04-01-preview' = [
+  for e in eligibilities: {
+    name: guid(managementGroup().id, e.input, e.roleDefinitionId)
+    properties: {
+      principalId: policyValues[e.input]
+      roleDefinitionId: extensionResourceId(managementGroup().id, 'Microsoft.Authorization/roleDefinitions', e.roleDefinitionId)
+      requestType: 'AdminAssign'
+      justification: '\${e.name}: eligible by design (Azure Governance Planner).'
+      scheduleInfo: {
+        startDateTime: startDateTime
+        expiration: {
+          type: 'AfterDuration'
+          duration: 'P\${durationDays}D'
+        }
+      }
+    }
+  }
+]
+`;
+}
+
+/** Bash + az CLI + jq: PIM role settings at every management group (Bicep can only patch existing policies). */
+export function toPimPolicyScript(model: IacModel, options: ExportOptions): string {
+  const p = model.pim!;
+  const approver = model.inputs.find((i) => i.name === 'pim_approver_group_id');
+  const approverValue = approver ? inputValue(approver, model, options) : '';
+  const calls = p.managementGroupIds.flatMap((mg) =>
+    p.roles.map((r) => `apply "/providers/Microsoft.Management/managementGroups/${mg}" "${r.roleDefinitionId}" ${r.requireApproval} # ${r.name}`),
+  );
+  return `#!/usr/bin/env bash
+# PIM role settings for the design's privileged roles at every management group:
+# ${p.profile} profile, activations up to ${p.activationMaximumDuration}, MFA${p.requireTicket ? ', a ticket' : ''} and justification required,
+# eligibility up to ${p.eligibleExpireAfter} and active assignments up to ${p.activeExpireAfter} (no permanent assignments).
+# ${GENERATOR}
+#
+# Run after the deployment created the management groups:
+#   az login
+#   bash scripts/set-pim-policies.sh
+#
+# Needs the az CLI, jq, Entra ID P2 (or Entra ID Governance) and Owner or
+# Role Based Access Control Administrator on the management groups. Each policy
+# is read, its rules changed in place and written back.
+set -euo pipefail
+
+APPROVER_GROUP_ID="\${PIM_APPROVER_GROUP_ID:-${approverValue}}"
+API="2020-10-01"
+ARM="$(az cloud show --query endpoints.resourceManager -o tsv)"
+ARM="\${ARM%/}"
+
+apply() {
+  local scope="$1" role="$2" approval="$3"
+  local policy id body
+  policy="$(az rest --method get \\
+    --url "\${ARM}\${scope}/providers/Microsoft.Authorization/roleManagementPolicies?api-version=\${API}" \\
+    --uri-parameters "\\\$filter=roleDefinitionId eq '\${scope}/providers/Microsoft.Authorization/roleDefinitions/\${role}'" \\
+    --query "value[0]" -o json)"
+  id="$(jq -r .id <<<"$policy")"
+  body="$(jq \\
+    --arg act "${p.activationMaximumDuration}" --arg elig "${p.eligibleExpireAfter}" --arg active "${p.activeExpireAfter}" \\
+    --argjson mfa ${p.requireMfa} --argjson just ${p.requireJustification} --argjson ticket ${p.requireTicket} \\
+    --argjson approval "$approval" --arg approver "$APPROVER_GROUP_ID" '
+    def checks: [(if $mfa then "MultiFactorAuthentication" else empty end), (if $just then "Justification" else empty end)];
+    def approve: $approval and ($approver != "");
+    { properties: { rules: [ .properties.rules[] |
+      if .id == "Expiration_EndUser_Assignment" then .maximumDuration = $act
+      elif .id == "Enablement_EndUser_Assignment" then .enabledRules = (checks + (if $ticket then ["Ticketing"] else [] end))
+      elif .id == "Approval_EndUser_Assignment" then
+        .setting.isApprovalRequired = approve
+        | if approve then .setting.approvalStages = [{ approvalStageTimeOutInDays: 1, isApproverJustificationRequired: true,
+            escalationTimeInMinutes: 0, isEscalationEnabled: false,
+            primaryApprovers: [{ id: $approver, userType: "Group", isBackup: false }] }] else . end
+      elif .id == "Expiration_Admin_Eligibility" then .isExpirationRequired = true | .maximumDuration = $elig
+      elif .id == "Expiration_Admin_Assignment" then .isExpirationRequired = true | .maximumDuration = $active
+      elif .id == "Enablement_Admin_Assignment" then .enabledRules = checks
+      elif (.id | startswith("Notification_Admin_")) then .isDefaultRecipientsEnabled = true | .notificationLevel = "All"
+      else . end ] } }' <<<"$policy")"
+  az rest --method patch --url "\${ARM}\${id}?api-version=\${API}" --body "$body" -o none
+  echo "Set PIM settings for role \${role} at \${scope}"
+}
+
+${calls.join('\n')}
 `;
 }
 
@@ -1409,6 +1577,7 @@ param policyAssignments = loadJsonContent('lib/policy-assignments.json')
 param platformResources = loadJsonContent('lib/platform-resources.json')
 param policyExemptions = loadJsonContent('lib/policy-exemptions.json')
 param hierarchySettings = loadJsonContent('lib/hierarchy-settings.json')
+param pim = loadJsonContent('lib/pim.json')
 param platformRoleAssignments = loadJsonContent('lib/platform-role-assignments.json')
 param subscriptionPlacements = loadJsonContent('lib/subscription-placements.json')
 `;
@@ -1629,6 +1798,31 @@ variable "hierarchy_settings" {
   type = object({
     default_management_group_id              = string
     require_authorization_for_group_creation = bool
+  })
+  default = null
+}
+
+variable "pim" {
+  description = "Privileged Identity Management: role settings at every management group and eligible assignments (group object IDs in policy_values). Null to leave PIM as it is."
+  type = object({
+    activation_maximum_duration = string
+    require_mfa                 = bool
+    require_justification       = bool
+    require_ticket              = bool
+    eligible_expire_after       = string
+    active_expire_after         = string
+    eligible_duration_days      = number
+    roles = list(object({
+      name               = string
+      role_definition_id = string
+      require_approval   = bool
+    }))
+    eligibilities = list(object({
+      name                = string
+      role_definition_id  = string
+      management_group_id = string
+      input               = string
+    }))
   })
   default = null
 }
@@ -2038,6 +2232,95 @@ resource "azapi_resource" "hierarchy_settings" {
   }
 }
 
+# --- Privileged Identity Management ---------------------------------------------
+
+locals {
+  pim_approver = lookup(var.policy_values, "pim_approver_group_id", "")
+  pim_policies = var.pim == null ? {} : {
+    for pair in setproduct(keys(local.management_groups), var.pim.roles) : "\${pair[0]}/\${pair[1].name}" => { management_group_id = pair[0], role = pair[1] }
+  }
+  # Eligible assignments whose group object ID is set.
+  pim_eligibilities = var.pim == null ? {} : {
+    for e in var.pim.eligibilities : "\${e.management_group_id}/\${e.name}" => e if lookup(var.policy_values, e.input, "") != ""
+  }
+}
+
+# Role settings for the privileged roles at every management group.
+resource "azurerm_role_management_policy" "pim" {
+  for_each           = local.pim_policies
+  scope              = local.management_group_ids[each.value.management_group_id]
+  role_definition_id = "\${local.management_group_ids[each.value.management_group_id]}/providers/Microsoft.Authorization/roleDefinitions/\${each.value.role.role_definition_id}"
+
+  activation_rules {
+    maximum_duration                   = var.pim.activation_maximum_duration
+    require_approval                   = each.value.role.require_approval && local.pim_approver != ""
+    require_multifactor_authentication = var.pim.require_mfa
+    require_justification              = var.pim.require_justification
+    require_ticket_info                = var.pim.require_ticket
+
+    dynamic "approval_stage" {
+      for_each = each.value.role.require_approval && local.pim_approver != "" ? [1] : []
+      content {
+        primary_approver {
+          object_id = local.pim_approver
+          type      = "Group"
+        }
+      }
+    }
+  }
+
+  # No permanent eligible or active assignments.
+  eligible_assignment_rules {
+    expiration_required = true
+    expire_after        = var.pim.eligible_expire_after
+  }
+
+  active_assignment_rules {
+    expiration_required                = true
+    expire_after                       = var.pim.active_expire_after
+    require_multifactor_authentication = var.pim.require_mfa
+    require_justification              = var.pim.require_justification
+  }
+
+  notification_rules {
+    eligible_activations {
+      admin_notifications {
+        notification_level = "All"
+        default_recipients = true
+      }
+    }
+    eligible_assignments {
+      admin_notifications {
+        notification_level = "All"
+        default_recipients = true
+      }
+    }
+    active_assignments {
+      admin_notifications {
+        notification_level = "All"
+        default_recipients = true
+      }
+    }
+  }
+}
+
+# Groups that can activate a privileged role just in time.
+resource "azurerm_pim_eligible_role_assignment" "pim" {
+  for_each           = local.pim_eligibilities
+  scope              = local.management_group_ids[each.value.management_group_id]
+  role_definition_id = "\${local.management_group_ids[each.value.management_group_id]}/providers/Microsoft.Authorization/roleDefinitions/\${each.value.role_definition_id}"
+  principal_id       = var.policy_values[each.value.input]
+  justification      = "\${each.value.name}: eligible by design (Azure Governance Planner)."
+
+  schedule {
+    expiration {
+      duration_days = var.pim.eligible_duration_days
+    }
+  }
+
+  depends_on = [azurerm_role_management_policy.pim]
+}
+
 # Exemptions, at their scope.
 locals {
   exemptions = { for e in var.policy_exemptions : "\${e.scope_kind}/\${coalesce(e.scope_management_group_id, e.scope_subscription_id, "-")}/\${coalesce(e.scope_resource_group_name, "-")}/\${e.name}" => e }
@@ -2197,6 +2480,24 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
       expires_on: e.expiresOn ?? undefined,
     })),
     cloud_environment: model.cloud,
+    pim: model.pim
+      ? {
+          activation_maximum_duration: model.pim.activationMaximumDuration,
+          require_mfa: model.pim.requireMfa,
+          require_justification: model.pim.requireJustification,
+          require_ticket: model.pim.requireTicket,
+          eligible_expire_after: model.pim.eligibleExpireAfter,
+          active_expire_after: model.pim.activeExpireAfter,
+          eligible_duration_days: model.pim.eligibleDurationDays,
+          roles: model.pim.roles.map((r) => ({ name: r.name, role_definition_id: r.roleDefinitionId, require_approval: r.requireApproval })),
+          eligibilities: model.pim.eligibilities.map((e) => ({
+            name: e.name,
+            role_definition_id: e.roleDefinitionId,
+            management_group_id: e.managementGroupId,
+            input: e.input,
+          })),
+        }
+      : undefined,
     hierarchy_settings: model.hierarchySettings
       ? {
           default_management_group_id: model.hierarchySettings.defaultManagementGroupId,
@@ -2338,7 +2639,7 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 ${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
     unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
-${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
+${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
 - **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
   their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
@@ -2371,6 +2672,23 @@ function platformSection(model: IacModel): string {
       };`,
   ].filter(Boolean);
   return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
+}
+
+function pimSection(model: IacModel): string {
+  const p = model.pim;
+  if (!p) return '';
+  const approval = p.roles.filter((r) => r.requireApproval).map((r) => r.name);
+  return `- **Privileged Identity Management (${p.profile} profile).** ${p.roles.map((r) => r.name).join(', ')} at every management group:
+  activations up to ${p.activationMaximumDuration.replace('PT', '').toLowerCase()}, with MFA and justification${p.requireTicket ? ' and a ticket number' : ''};
+  approval for ${approval.join(', ') || 'none'} (by \`pim_approver_group_id\`); eligible assignments expire after
+  ${p.eligibleExpireAfter.slice(1, -1)} days and active ones after ${p.activeExpireAfter.slice(1, -1)}, so nothing is permanent. Eligible groups:
+${p.eligibilities.map((e) => `  - ${e.name}: ${e.roleName} at \`${e.managementGroupId}\` (\`${e.input}\`)`).join('\n') || '  - none'}
+  PIM needs Entra ID P2 (or Entra ID Governance). Remove standing Owner and access-administrator assignments once the
+  eligible ones work, but keep two emergency access (break-glass) accounts outside PIM. Set up ${p.accessReview} access
+  reviews of the eligible assignments in Entra ID (Identity Governance), which the export doesn't create.${
+    model.policyDefinitions !== undefined ? '' : ''
+  }
+`;
 }
 
 function hierarchySection(model: IacModel): string {
@@ -2427,7 +2745,7 @@ lib/                              the design as data
 ${model.cloud === 'usgovernment' ? 'az cloud set --name AzureUSGovernment\n' : ''}az login
 az deployment tenant what-if --location <region> --parameters ${env}.bicepparam
 az deployment tenant create --name governance-${env} --location <region> --parameters ${env}.bicepparam
-\`\`\`
+${model.pim ? 'bash scripts/set-pim-policies.sh   # PIM role settings (needs jq)\n' : ''}\`\`\`
 
 ${prerequisites(model, options)}${notesSection(model)}`;
 }
@@ -2521,6 +2839,13 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
         { name: 'lib/policy-exemptions.json', content: json(model.exemptions), description: 'design' },
         { name: 'lib/hierarchy-settings.json', content: json(model.hierarchySettings ?? {}), description: 'design' },
+        { name: 'lib/pim.json', content: json(model.pim ?? {}), description: 'design' },
+        ...(model.pim
+          ? [
+              { name: 'modules/pim-eligibility.bicep', content: toBicepPimModule(), description: 'module' },
+              { name: 'scripts/set-pim-policies.sh', content: toPimPolicyScript(model, options), description: 'PIM role settings' },
+            ]
+          : []),
         { name: 'lib/policy-set-definitions.json', content: json(model.policySetDefinitions), description: 'design' },
         { name: 'lib/policy-definitions.json', content: json(model.policyDefinitions), description: 'design' },
         { name: 'README.md', content: bicepReadme(model, options), description: 'how to deploy' },

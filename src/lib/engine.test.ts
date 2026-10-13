@@ -330,3 +330,43 @@ describe('parking lot', () => {
     expect(inherit.assignments).toEqual([]);
   });
 });
+
+describe('Privileged Identity Management', () => {
+  it('is on by default with the standard profile, and picks the high profile for high-impact frameworks', () => {
+    const standard = design({ frameworks: ['nist-800-53-r5'] }).pim!;
+    expect(standard.profile).toBe('standard');
+    expect(standard.settings.activationMaximumDuration).toBe('PT8H');
+    expect(standard.roles.find((r) => r.key === 'contributor')!.requireApproval).toBe(false);
+    expect(standard.roles.find((r) => r.key === 'owner')!.requireApproval).toBe(true);
+    for (const frameworks of [['fedramp-high'], ['cmmc-2-l2'], ['cjis']]) expect(design({ frameworks }).pim!.profile).toBe('high');
+    expect(design({ frameworks: ['nist-800-53-r5'], nistBaseline: 'high' }).pim!.profile).toBe('high');
+    const high = design({ frameworks: ['fedramp-high'] }).pim!;
+    expect(high.settings).toMatchObject({ activationMaximumDuration: 'PT4H', requireTicket: true, eligibleExpireAfter: 'P180D' });
+    expect(high.roles.every((r) => r.requireApproval)).toBe(true);
+  });
+
+  it('honours a chosen profile, the roles chosen and eligible groups in the hierarchy', () => {
+    const p = design({
+      frameworks: ['fedramp-high'],
+      pim: {
+        enabled: true,
+        profile: 'standard',
+        roles: ['owner'],
+        eligibilities: [
+          { id: 'a', label: 'Owners', role: 'owner', mg: 'root' },
+          { id: 'b', label: 'Contributors', role: 'contributor', mg: 'landingzones' },
+          { id: 'c', label: 'Local owners', role: 'owner', mg: 'local' },
+        ],
+      },
+    }).pim!;
+    expect(p.profile).toBe('standard');
+    expect(p.roles.map((r) => r.key)).toEqual(['owner']);
+    // Contributor isn't under PIM and Local isn't in the design.
+    expect(p.eligibilities.map((x) => x.id)).toEqual(['a']);
+    expect(p.controls.map((c) => c.framework)).toEqual(['FedRAMP High']);
+  });
+
+  it('can be turned off', () => {
+    expect(design({ pim: { enabled: false, profile: 'auto', roles: [], eligibilities: [] } }).pim).toBeNull();
+  });
+});

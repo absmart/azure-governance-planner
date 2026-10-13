@@ -6,6 +6,7 @@ import { DesignsDialog } from './components/DesignsDialog';
 import { ExportDialog } from './components/ExportDialog';
 import { Hierarchy } from './components/Hierarchy';
 import { Policies } from './components/Policies';
+import { PrivilegedAccess } from './components/PrivilegedAccess';
 import catalogJson from './data/catalog.json';
 import type { Catalog } from './lib/catalog';
 import {
@@ -25,12 +26,13 @@ import { STORAGE_KEYS, loadDesigns, loadExportSettings, loadInput, readJson, sav
 
 const catalog = catalogJson as unknown as Catalog;
 
-type View = 'hierarchy' | 'coverage' | 'policies';
+type View = 'hierarchy' | 'coverage' | 'policies' | 'pim';
 
 const VIEWS: { value: View; label: string }[] = [
   { value: 'hierarchy', label: 'Management groups' },
   { value: 'coverage', label: 'Control coverage' },
   { value: 'policies', label: 'Policies' },
+  { value: 'pim', label: 'Privileged access' },
 ];
 
 export default function App() {
@@ -179,6 +181,7 @@ export default function App() {
           {view === 'hierarchy' && <Hierarchy catalog={catalog} design={design} input={input} onChange={setInput} />}
           {view === 'coverage' && <Coverage catalog={catalog} design={design} />}
           {view === 'policies' && <Policies catalog={catalog} design={design} />}
+          {view === 'pim' && <PrivilegedAccess design={design} input={input} onChange={setInput} />}
           <footer className="muted">
             Policy data from the Azure Policy built-ins, the Azure Landing Zones library, AzAdvertizer and NIST OSCAL, snapshot{' '}
             {catalog.generated.slice(0, 10)}. Regenerate with <code>npm run update-catalog</code>.

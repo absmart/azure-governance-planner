@@ -391,6 +391,33 @@ describe('parking lot in the export', () => {
   });
 });
 
+describe('PIM in the export', () => {
+  const m = model({ frameworks: ['fedramp-high'] });
+
+  it('sets role settings at every management group and asks for the group object IDs', () => {
+    expect(m.pim!.managementGroupIds).toEqual(m.managementGroups.map((g) => g.id));
+    expect(m.pim!.roles.map((r) => r.name)).toEqual(['Owner', 'User Access Administrator', 'Role Based Access Control Administrator', 'Contributor']);
+    expect(m.pim!.eligibilities).toEqual([
+      expect.objectContaining({ name: 'Platform owners', roleName: 'Owner', managementGroupId: 'contoso', input: 'pim_group_platform_owners' }),
+      expect.objectContaining({ name: 'Access administrators', input: 'pim_group_access_administrators' }),
+      expect.objectContaining({ name: 'Landing zone contributors', managementGroupId: 'contoso-landingzones' }),
+    ]);
+    const names = m.inputs.map((i) => i.name);
+    expect(names).toEqual(expect.arrayContaining(['pim_approver_group_id', 'pim_group_platform_owners']));
+    expect(unsetInputs(m, { environment: 'prd', values: {} }).map((i) => i.name)).toContain('pim_group_platform_owners');
+  });
+
+  it('writes the PIM policy script for Bicep, with the approver from the values', () => {
+    const files = generateIacFiles('bicep', m, { environment: 'prd', values: { pim_approver_group_id: 'abc' } });
+    const script = files.find((f) => f.name === 'scripts/set-pim-policies.sh')!.content;
+    expect(script).toContain('APPROVER_GROUP_ID="${PIM_APPROVER_GROUP_ID:-abc}"');
+    expect(script).toContain('--uri-parameters "\\$filter=roleDefinitionId eq');
+    expect(script.match(/^apply /gm)!.length).toBe(m.pim!.managementGroupIds.length * 4);
+    expect(files.some((f) => f.name === 'modules/pim-eligibility.bicep')).toBe(true);
+    expect(model({ pim: { enabled: false, profile: 'auto', roles: [], eligibilities: [] } }).pim).toBeNull();
+  });
+});
+
 describe('generateIacFiles', () => {
   const m = model(everything);
   const options = { environment: 'prod', values: {} };

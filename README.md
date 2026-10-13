@@ -8,6 +8,21 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 - a custom enforcement initiative of the framework's Deny-capable policies for landing zones (what-if or enforced, depending on the posture);
 - assignments for decisions such as allowed locations, required tags and confidential landing zones.
 
+## Privileged access
+
+The **Privileged access** view puts Owner, User Access Administrator, Role Based Access Control Administrator and Contributor under Microsoft Entra **Privileged Identity Management**: named groups are eligible for a role at a management group and activate it just in time, and every management group gets the same role settings. The profile comes from the selected frameworks (High for FedRAMP High, NIST 800-53 High, CMMC and CJIS; Standard otherwise) or is chosen:
+
+| | Standard | High |
+| --- | --- | --- |
+| Longest activation | 8 hours | 4 hours |
+| Activation requires | MFA, justification | MFA, justification, ticket number |
+| Approval | Owner, User Access Administrator, RBAC Administrator | all four roles |
+| Eligible assignments expire after | 365 days | 180 days |
+| Active assignments expire after | 15 days | 15 days |
+| Access reviews (set up in Entra ID) | quarterly | monthly |
+
+The view lists the controls this helps address (NIST 800-53 AC-2(6), AC-2(7), AC-6(5), AC-6(7), IA-2(1), AC-2(4); NIST 800-171; CMMC; MCSB PA-1, PA-2, PA-4; ISO 27001; PCI DSS; SOC 2). Terraform sets the role settings and eligible assignments with `azurerm_role_management_policy` and `azurerm_pim_eligible_role_assignment`; Bicep creates the eligible assignments and `scripts/set-pim-policies.sh` (az CLI and jq) sets the role settings. The groups' and the approver's Entra ID object IDs are per-environment values. PIM needs Entra ID P2 or Entra ID Governance.
+
 ## Saved designs
 
 **Designs** keeps named designs in the browser: save (Ctrl+S), save as new, open, duplicate, rename and delete. A design holds every decision, including overrides and exemptions, plus the IaC export settings (format, environment and values). Export one or all of them to a `.json` file to back them up, share them or move them to another machine, and import them again from the same dialog.

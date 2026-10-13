@@ -27,6 +27,7 @@ const everything: Partial<DesignInput> = {
   confidential: true,
   cmk: true,
   sovereignty: true,
+  local: true,
 };
 
 describe('buildIacModel', () => {

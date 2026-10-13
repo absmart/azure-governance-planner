@@ -224,6 +224,16 @@ describe('families', () => {
 });
 
 describe('defaults', () => {
+  it('adds the Local landing zone only when asked, with the ALZ Azure Local assignment', () => {
+    expect(design({}).mgs.map((m) => m.role)).not.toContain('local');
+    const d = design({ local: true });
+    const local = d.mgs.find((m) => m.role === 'local')!;
+    expect(local.parent).toBe('landingzones');
+    expect(local.id).toBe('contoso-local');
+    expect(local.assignments.map((a) => a.name)).toEqual(['Enforce-ALDO-Services']);
+    expect(local.assignments[0].policies.length).toBeGreaterThan(0);
+  });
+
   it('leaves DDoS Network Protection off, for its cost', () => {
     const d = design({});
     expect(find(d, 'Enable-DDoS-VNET')).toBeUndefined();

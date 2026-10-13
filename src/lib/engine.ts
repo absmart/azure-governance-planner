@@ -21,6 +21,7 @@ export type MgRole =
   | 'landingzones'
   | 'corp'
   | 'online'
+  | 'local'
   | 'confidential-corp'
   | 'confidential-online'
   | 'sandbox'
@@ -51,6 +52,8 @@ export interface DesignInput {
   platform: 'full' | 'single';
   corp: boolean;
   online: boolean;
+  /** Local landing zones, for Azure Local clusters in disconnected operations. Rarely needed, so off by default. */
+  local: boolean;
   /** Confidential Corp / Online landing zones (Sovereign Landing Zone pattern). */
   confidential: boolean;
   sandbox: boolean;
@@ -84,6 +87,7 @@ export const DEFAULT_INPUT: DesignInput = {
   platform: 'full',
   corp: true,
   online: true,
+  local: false,
   confidential: false,
   sandbox: true,
   decommissioned: true,
@@ -210,6 +214,7 @@ export const MG_ORDER: MgRole[] = [
   'landingzones',
   'corp',
   'online',
+  'local',
   'confidential-corp',
   'confidential-online',
   'sandbox',
@@ -257,6 +262,7 @@ const MG_DESCRIPTIONS: Record<MgRole, string> = {
   landingzones: 'Application landing zones. Workload guardrails apply to every child.',
   corp: 'Workloads that are private and connected to the corporate network through the hub.',
   online: 'Internet-facing workloads that may have public endpoints.',
+  local: 'Azure Local clusters in disconnected operations. Resource types they do not support are audited.',
   'confidential-corp': 'Corp workloads that must run on confidential computing with customer-managed keys.',
   'confidential-online': 'Online workloads that must run on confidential computing with customer-managed keys.',
   sandbox: 'Experimentation subscriptions, isolated from corporate networks.',
@@ -325,6 +331,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
   add('landingzones', 'root', ['landing_zones'], 'Landing zones');
   if (input.corp) add('corp', 'landingzones', ['corp'], 'Corp');
   if (input.online) add('online', 'landingzones', ['online'], 'Online');
+  if (input.local) add('local', 'landingzones', ['local'], 'Local');
   if (input.confidential) {
     add('confidential-corp', 'landingzones', ['corp'], 'Confidential Corp');
     add('confidential-online', 'landingzones', ['online'], 'Confidential Online');

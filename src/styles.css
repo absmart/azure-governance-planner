@@ -530,6 +530,7 @@ td > .badge:first-child {
 .mg-node.mg-landingzones,
 .mg-node.mg-corp,
 .mg-node.mg-online,
+.mg-node.mg-local,
 .mg-node.mg-confidential-corp,
 .mg-node.mg-confidential-online {
   border-left-color: var(--framework);

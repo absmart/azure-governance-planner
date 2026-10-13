@@ -56,7 +56,7 @@ const FRAMEWORKS = [
 
 const ALZ_ARCHETYPES = [
   'root', 'platform', 'connectivity', 'identity', 'management', 'security',
-  'landing_zones', 'corp', 'online', 'sandbox', 'decommissioned',
+  'landing_zones', 'corp', 'online', 'local', 'sandbox', 'decommissioned',
 ];
 
 async function get(url, as = 'json') {

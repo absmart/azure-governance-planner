@@ -191,6 +191,11 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
         </label>
         {check('corp', 'Corp landing zones', 'Private workloads connected to the hub')}
         {check('online', 'Online landing zones', 'Internet-facing workloads')}
+        {check(
+          'local',
+          'Local landing zones (Azure Local)',
+          'For Azure Local clusters in disconnected operations: audits resource types they do not support. Rarely needed.',
+        )}
         {check('confidential', 'Confidential landing zones', 'Confidential Corp and Online (Sovereign Landing Zone)')}
         {check('sandbox', 'Sandbox')}
         {check('decommissioned', 'Decommissioned')}

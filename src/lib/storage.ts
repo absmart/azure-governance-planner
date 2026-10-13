@@ -1,7 +1,9 @@
 // Browser storage for the app. Everything is per browser; storage can be
 // unavailable (private windows, blocked site data), so every access is guarded.
 
+import { DEFAULT_EXPORT_SETTINGS, migrateExportSettings, migrateInput, type SavedDesign } from './designs';
 import { DEFAULT_INPUT, type DesignInput } from './engine';
+import type { ExportSettings } from './iac';
 
 export const STORAGE_KEYS = {
   /** The decisions being edited. */
@@ -10,6 +12,10 @@ export const STORAGE_KEYS = {
   view: 'azure-governance-planner:view',
   /** IaC export: format, environment and per-environment values. */
   export: 'azure-governance-planner:export',
+  /** Saved designs. */
+  designs: 'azure-governance-planner:designs',
+  /** Id of the saved design the current decisions were opened from or saved as. */
+  activeDesign: 'azure-governance-planner:active-design',
 } as const;
 
 export function readJson<T>(key: string): T | null {
@@ -41,7 +47,18 @@ interface StoredInput {
 export function loadInput(): DesignInput {
   const stored = readJson<StoredInput>(STORAGE_KEYS.input);
   if (stored?.version !== 1) return DEFAULT_INPUT;
-  return { ...DEFAULT_INPUT, ...stored.input };
+  return migrateInput(stored.input);
+}
+
+export function loadExportSettings(): ExportSettings {
+  const stored = readJson<Partial<ExportSettings>>(STORAGE_KEYS.export);
+  return stored ? migrateExportSettings(stored) : DEFAULT_EXPORT_SETTINGS;
+}
+
+export function loadDesigns(): SavedDesign[] {
+  const stored = readJson<SavedDesign[]>(STORAGE_KEYS.designs);
+  if (!Array.isArray(stored)) return [];
+  return stored.map((d) => ({ ...d, input: migrateInput(d.input), exportSettings: migrateExportSettings(d.exportSettings) }));
 }
 
 export function saveInput(input: DesignInput): boolean {

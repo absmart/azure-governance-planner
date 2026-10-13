@@ -6,7 +6,7 @@ import {
   EXPORT_ROOT,
   FORMAT_LABEL,
   type AlzLibrary,
-  type ExportOptions,
+  type ExportSettings,
   type IacFormat,
   buildIacModel,
   generateIacFiles,
@@ -15,12 +15,7 @@ import {
   roleAssignmentCount,
   unsetInputs,
 } from '../lib/iac';
-import { STORAGE_KEYS, readJson, writeJson } from '../lib/storage';
 import { createZip } from '../lib/zip';
-
-interface StoredExport extends ExportOptions {
-  format: IacFormat;
-}
 
 /** Longer files are cut short in the preview (they download in full). */
 const PREVIEW_LIMIT = 60_000;
@@ -39,25 +34,23 @@ function loadLibrary(): Promise<AlzLibrary> {
 }
 
 /** The design as Bicep, Terraform or Terragrunt, ready to copy or download. */
-export function ExportDialog(props: { catalog: Catalog; design: Design; onClose: () => void }) {
-  const { catalog, design, onClose } = props;
+export function ExportDialog(props: {
+  catalog: Catalog;
+  design: Design;
+  /** Format, environment and values; kept by the app so they're saved with the design. */
+  settings: ExportSettings;
+  onSettingsChange: (settings: ExportSettings) => void;
+  onClose: () => void;
+}) {
+  const { catalog, design, settings, onSettingsChange: setSettings, onClose } = props;
   const [library, setLibrary] = useState<AlzLibrary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [settings, setSettings] = useState<StoredExport>(() => ({
-    format: 'bicep',
-    environment: 'prd',
-    values: {},
-    ...(readJson<Partial<StoredExport>>(STORAGE_KEYS.export) ?? {}),
-  }));
   const [fileIndex, setFileIndex] = useState(0);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     loadLibrary().then(setLibrary, (e: Error) => setError(e.message));
   }, []);
-  useEffect(() => {
-    writeJson(STORAGE_KEYS.export, settings);
-  }, [settings]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);

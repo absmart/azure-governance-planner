@@ -152,11 +152,6 @@ h2 {
   margin-bottom: 16px;
 }
 
-.topbar h1 {
-  margin: 0 auto 0 0;
-  font-size: 18px;
-}
-
 .stats {
   display: flex;
   flex-wrap: wrap;
@@ -1081,4 +1076,132 @@ p.removed {
 
 .removed-item {
   margin-right: 10px;
+}
+
+/* Designs */
+
+.design-title {
+  font-size: 18px;
+  font-weight: 600;
+  border-color: transparent;
+  background: transparent;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.design-title:hover {
+  border-color: var(--border);
+}
+
+.app-name {
+  color: var(--muted);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+.chip {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  margin-left: 6px;
+}
+
+.save-chip {
+  cursor: pointer;
+  white-space: nowrap;
+  margin-left: 0;
+}
+
+.save-chip.saved {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+}
+
+.save-chip.unsaved {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
+}
+
+.current-design {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.save-state {
+  margin-left: 10px;
+  font-size: 12px;
+}
+
+.save-state.saved {
+  color: var(--ok);
+}
+
+.save-state.unsaved {
+  color: var(--warning);
+}
+
+.design-list {
+  margin-top: 12px;
+  overflow: auto;
+  min-height: 120px;
+}
+
+.design-list td {
+  vertical-align: middle;
+}
+
+.design-list tr.selected td {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.design-name {
+  width: 240px;
+  font-weight: 600;
+}
+
+.design-list .actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.design-list .actions button {
+  margin-left: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.design-list .empty {
+  padding: 16px;
+  margin: 0;
+}
+
+button.danger:hover {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.issues li.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, var(--surface));
+}
+
+.issues li.error {
+  color: var(--error);
+  background: var(--error-bg);
 }

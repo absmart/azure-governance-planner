@@ -250,6 +250,11 @@ const NEW_INPUT_DESCRIPTION: Record<string, string> = {
   private_dns_zone_resource_group_name: 'Resource group created in the private DNS zone subscription for the private link DNS zones.',
 };
 
+/** The export dialog's settings: the format plus the options. */
+export interface ExportSettings extends ExportOptions {
+  format: IacFormat;
+}
+
 export interface ExportOptions {
   environment: string;
   /** Values for the model's inputs, by name; empty or missing means the placeholder. */

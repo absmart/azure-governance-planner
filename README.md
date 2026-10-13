@@ -8,6 +8,10 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 - a custom enforcement initiative of the framework's Deny-capable policies for landing zones (what-if or enforced, depending on the posture);
 - assignments for decisions such as allowed locations, required tags and confidential landing zones.
 
+## Saved designs
+
+**Designs** keeps named designs in the browser: save (Ctrl+S), save as new, open, duplicate, rename and delete. A design holds every decision, including overrides and exemptions, plus the IaC export settings (format, environment and values). Export one or all of them to a `.json` file to back them up, share them or move them to another machine, and import them again from the same dialog.
+
 ## Export to infrastructure as code
 
 **Export IaC** turns the current design into Bicep, Terraform or Terragrunt. Each export has:

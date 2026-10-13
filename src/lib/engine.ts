@@ -71,6 +71,8 @@ export interface Exemption {
 export const overrideKey = (mg: MgRole, assignment: string) => `${mg}/${assignment}`;
 
 export interface DesignInput {
+  /** The design's name, shown in the top bar and the saved designs. */
+  name: string;
   rootName: string;
   /** Prefix for management group IDs, e.g. "contoso" -> "contoso-platform". */
   prefix: string;
@@ -112,6 +114,7 @@ export interface DesignInput {
 }
 
 export const DEFAULT_INPUT: DesignInput = {
+  name: 'Contoso governance',
   rootName: 'Contoso',
   prefix: 'contoso',
   cloud: 'AzureCloud',

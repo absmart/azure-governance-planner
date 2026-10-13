@@ -559,14 +559,16 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     }
     if (candidates.size) {
       const label = frameworks.map((f) => f.short).join(', ');
+      // Azure limits display names to 128 characters.
+      const title = `Enforce ${label} guardrails`.length <= 128 ? `Enforce ${label} guardrails` : `Enforce guardrails of ${frameworks.length} frameworks`;
       lz.assignments.push({
         name: 'Enforce-Framework-GR',
-        displayName: `Enforce ${label} guardrails`,
+        displayName: title,
         description: `Custom initiative: the ${candidates.size} Deny-capable policies mapped to in-scope ${label} controls that ALZ doesn't already enforce, set to Deny.`,
         origin: 'enforcement',
         kind: 'initiative',
         definitionId: `/providers/Microsoft.Management/managementGroups/${root.id}/providers/Microsoft.Authorization/policySetDefinitions/Enforce-Framework-GR`,
-        definitionName: `Enforce ${label} guardrails`,
+        definitionName: title,
         definitionSource: 'Custom',
         enforcementMode: input.enforcement === 'strict' ? 'Default' : 'DoNotEnforce',
         identity: false,

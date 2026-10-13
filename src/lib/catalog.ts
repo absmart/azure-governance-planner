@@ -16,6 +16,8 @@ export interface PolicyInfo {
   v: string;
   /** BuiltIn or ALZ custom definition. */
   t: 'BuiltIn' | 'ALZ';
+  /** Role definition GUIDs a DeployIfNotExists / Modify identity needs. */
+  r?: string[];
   /** Preview. */
   pv?: true;
   /** Deprecated. */
@@ -96,6 +98,8 @@ export interface Catalog {
     controls: Record<string, { t: string; b: BaselineCode[] }>;
   };
   alz: {
+    /** ALZ library release the archetypes and assignments come from. */
+    ref: string;
     managementGroups: AlzManagementGroup[];
     archetypes: Record<string, string[]>;
     assignments: Record<string, AlzAssignment>;

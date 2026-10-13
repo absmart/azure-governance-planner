@@ -11,16 +11,23 @@
 // - usnistgov/oscal-content: NIST SP 800-53 Rev. 5 control titles and the
 //   Low/Moderate/High/Privacy baselines (SP 800-53B).
 //
-// The hosted app is static, so the data is committed with the source.
+// The hosted app is static, so the data is committed with the source. The ALZ
+// library's definitions and assignment parameters, which only the IaC export
+// needs, go to public/alz-library.json so the app loads them on demand.
 
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const out = fileURLToPath(new URL('../src/data/catalog.json', import.meta.url));
+const libraryOut = fileURLToPath(new URL('../public/alz-library.json', import.meta.url));
 
 const AZADVERTIZER = 'https://www.azadvertizer.net';
 const POLICY_REPO = 'https://raw.githubusercontent.com/Azure/azure-policy/master/built-in-policies/policySetDefinitions';
-const ALZ_LIB = 'https://raw.githubusercontent.com/Azure/Azure-Landing-Zones-Library/main/platform/alz';
+/** ALZ library release the design and the exported definitions are pinned to. */
+const ALZ_REF = 'platform/alz/2026.10.0';
+const ALZ_LIB = `https://raw.githubusercontent.com/Azure/Azure-Landing-Zones-Library/refs/tags/${ALZ_REF}/platform/alz`;
+const ALZ_CONTENTS = 'https://api.github.com/repos/Azure/Azure-Landing-Zones-Library/contents/platform/alz';
 const OSCAL = 'https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov/SP800-53/rev5/json';
 
 /**
@@ -105,6 +112,9 @@ function effects(list) {
 
 const guidOf = (definitionId) => definitionId.split('/').pop();
 
+/** "Monitoring Contributor (749f88d5-...); Log Analytics Contributor (92aaf0da-...)" -> role GUIDs */
+const roleIds = (list) => [...(list ?? '').matchAll(/\(([0-9a-f-]{36})\)/gi)].map((m) => m[1].toLowerCase());
+
 /** "ac-2.1" -> "AC-2(1)" */
 const oscalToControl = (id) => id.toUpperCase().replace(/\.(\d+)$/, '($1)');
 
@@ -139,6 +149,7 @@ function usePolicy(id, fallback) {
       d: p.policyDescription.replace(/;\s/g, ', ').slice(0, 400),
       v: p.policyVersion,
       t: p.policyType === 'BuiltIn' ? 'BuiltIn' : 'ALZ',
+      ...(roleIds(p.policyRolesUsed).length ? { r: roleIds(p.policyRolesUsed) } : {}),
       ...(p.policyPreview ? { pv: true } : {}),
       ...(p.policyDeprecated ? { dp: true } : {}),
     };
@@ -265,17 +276,29 @@ const alzInitiatives = [...initiativeInfo.values()].filter((i) => i.initiativeTy
 
 // File names don't always match the definition name (some carry a version),
 // so index the library's set definitions by name.
-const setFiles = await get('https://api.github.com/repos/Azure/Azure-Landing-Zones-Library/contents/platform/alz/policy_set_definitions?ref=main');
-const alzSets = new Map();
-for (const f of setFiles.filter((f) => f.name.endsWith('.json'))) {
-  const set = await get(`${ALZ_LIB}/policy_set_definitions/${f.name}`);
-  alzSets.set(set.name, set);
+async function libraryFolder(folder) {
+  const files = await get(`${ALZ_CONTENTS}/${folder}?ref=${encodeURIComponent(ALZ_REF)}`);
+  const byName = new Map();
+  for (const f of files.filter((f) => f.name.endsWith('.json'))) {
+    const def = await get(`${ALZ_LIB}/${folder}/${f.name}`);
+    byName.set(def.name, def);
+  }
+  return byName;
 }
+const alzSets = await libraryFolder('policy_set_definitions');
+const alzDefinitions = await libraryFolder('policy_definitions');
+const alzDefaults = await get(`${ALZ_LIB}/alz_policy_default_values.json`);
+const assignmentFiles = {};
 
 const assignments = {};
 for (const name of assignmentNames) {
   const a = await get(`${ALZ_LIB}/policy_assignments/${name}.alz_policy_assignment.json`);
   const p = a.properties;
+  assignmentFiles[name] = {
+    parameters: p.parameters ?? {},
+    nonComplianceMessages: p.nonComplianceMessages ?? [],
+    ...(p.definitionVersion ? { definitionVersion: p.definitionVersion } : {}),
+  };
   const isSet = p.policyDefinitionId.includes('/policySetDefinitions/');
   const builtIn = p.policyDefinitionId.startsWith('/providers/Microsoft.Authorization/');
   const defName = guidOf(p.policyDefinitionId);
@@ -328,6 +351,13 @@ for (const name of assignmentNames) {
 }
 console.log(`  ${assignmentNames.length} assignments across ${ALZ_ARCHETYPES.length} archetypes`);
 
+// ALZ custom policies: the roles their DeployIfNotExists / Modify identities
+// need, from the definitions themselves.
+for (const [name, def] of alzDefinitions) {
+  const roles = def.properties.policyRule?.then?.details?.roleDefinitionIds ?? [];
+  if (policies[name] && roles.length) policies[name].r = roles.map((r) => guidOf(r).toLowerCase());
+}
+
 // Built-in initiatives the app's own decisions assign, looked up by name.
 const EXTRA_INITIATIVES = {
   'sovereignty-global': 'Sovereignty Baseline - Global Policies',
@@ -370,6 +400,7 @@ const catalog = {
   initiatives: extraInitiatives,
   nist: { families, controls: nistControls },
   alz: {
+    ref: ALZ_REF,
     managementGroups: architecture.management_groups.map((m) => ({
       id: m.id,
       displayName: m.display_name,
@@ -383,4 +414,16 @@ const catalog = {
 };
 
 writeFileSync(out, JSON.stringify(catalog) + '\n');
+
+const strip = (def) => ({ name: def.name, properties: def.properties });
+const library = {
+  ref: ALZ_REF,
+  policyDefinitions: Object.fromEntries([...alzDefinitions].map(([n, d]) => [n, strip(d)])),
+  policySetDefinitions: Object.fromEntries([...alzSets].map(([n, d]) => [n, strip(d)])),
+  policyAssignments: assignmentFiles,
+  defaults: alzDefaults.defaults,
+};
+mkdirSync(dirname(libraryOut), { recursive: true });
+writeFileSync(libraryOut, JSON.stringify(library) + '\n');
+console.log(`Wrote ${alzDefinitions.size} ALZ policy definitions and ${alzSets.size} set definitions to ${libraryOut}`);
 console.log(`Wrote ${Object.keys(policies).length} policies, ${frameworks.length} frameworks to ${out}`);

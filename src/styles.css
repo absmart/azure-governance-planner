@@ -840,3 +840,154 @@ td {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+
+button.icon {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 6px;
+}
+
+button.icon:hover {
+  color: var(--error);
+}
+
+/* Export dialog */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgb(0 0 0 / 0.45);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  max-height: 100%;
+  padding: 16px 20px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.3);
+}
+
+.dialog h2 {
+  margin-right: auto;
+  font-size: 16px;
+}
+
+.dialog p {
+  margin: 8px 0 0;
+}
+
+.export-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dialog .issues {
+  margin: 8px 0 0;
+}
+
+details.inputs {
+  flex-shrink: 0;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+details.inputs summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.input-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.input-grid label.field {
+  display: grid;
+  gap: 2px;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 11px;
+}
+
+.input-grid input {
+  width: 100%;
+  font-size: 12px;
+}
+
+.input-grid label.unset {
+  color: var(--warning);
+}
+
+.input-grid label.unset input {
+  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
+}
+
+.file-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.file-tabs button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+}
+
+.file-tabs button.active {
+  border-bottom-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.file-tabs .muted {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 11px;
+}
+
+.code.export-code {
+  flex: 1 0 280px;
+  max-height: 50vh;
+  margin-top: 0;
+  border-top-left-radius: 0;
+  background: var(--bg);
+}
+
+.dialog .footer {
+  justify-content: flex-end;
+  margin-top: 10px;
+}

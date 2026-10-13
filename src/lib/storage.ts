@@ -8,6 +8,8 @@ export const STORAGE_KEYS = {
   input: 'azure-governance-planner:input',
   /** Open view. */
   view: 'azure-governance-planner:view',
+  /** IaC export: format, environment and per-environment values. */
+  export: 'azure-governance-planner:export',
 } as const;
 
 export function readJson<T>(key: string): T | null {

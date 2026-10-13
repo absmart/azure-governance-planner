@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Notes } from './components/common';
 import { Coverage } from './components/Coverage';
 import { Decisions } from './components/Decisions';
+import { ExportDialog } from './components/ExportDialog';
 import { Hierarchy } from './components/Hierarchy';
 import { Policies } from './components/Policies';
 import catalogJson from './data/catalog.json';
@@ -23,6 +24,7 @@ export default function App() {
   const [input, setInput] = useState<DesignInput>(loadInput);
   const [view, setView] = useState<View>(() => readJson<View>(STORAGE_KEYS.view) ?? 'hierarchy');
   const [storageOk, setStorageOk] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const design = useMemo(() => buildDesign(catalog, input), [input]);
   const warnings = design.notes.filter((n) => n.level === 'warning').length;
 
@@ -53,6 +55,9 @@ export default function App() {
           <span className={`status ${warnings ? 'warning' : 'ok'}`}>
             {warnings} warning{warnings === 1 ? '' : 's'}
           </span>
+          <button className="primary" onClick={() => setExporting(true)}>
+            Export IaC
+          </button>
           <button onClick={reset}>Reset</button>
         </div>
         <div className="stats">
@@ -91,6 +96,7 @@ export default function App() {
           </footer>
         </main>
       </div>
+      {exporting && <ExportDialog catalog={catalog} design={design} onClose={() => setExporting(false)} />}
     </div>
   );
 }

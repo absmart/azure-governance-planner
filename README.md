@@ -19,6 +19,18 @@ npm test
 npm run build
 ```
 
+## Deploy
+
+The app is hosted on Azure Static Web Apps (`swa-azure-governance-planner` in resource group `rg-azure-governance-planner`, https://lemon-coast-0a2a7820f.2.azurestaticapps.net). Every push to `main` deploys to production: [.github/workflows/deploy.yml](.github/workflows/deploy.yml) runs the tests, builds and uploads `dist/`, using the repository secret `AZURE_STATIC_WEB_APPS_API_TOKEN`. A failing test stops the deploy.
+
+To deploy by hand from a machine with a logged-in Azure CLI:
+
+```sh
+npm run build
+export SWA_CLI_DEPLOYMENT_TOKEN=$(az staticwebapp secrets list -n swa-azure-governance-planner -g rg-azure-governance-planner --query properties.apiKey -o tsv)
+npx --yes @azure/static-web-apps-cli@2.0.2 deploy ./dist --env production
+```
+
 ## Policy data
 
 `src/data/catalog.json` is a committed snapshot built by `npm run update-catalog` from:

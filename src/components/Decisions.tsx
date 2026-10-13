@@ -185,8 +185,8 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
         <label className="field">
           Platform
           <select value={input.platform} onChange={(e) => set('platform', e.target.value as DesignInput['platform'])}>
-            <option value="full">Connectivity, Identity, Management, Security</option>
-            <option value="single">Single Platform group</option>
+            <option value="full">Separate subscriptions: Connectivity, Identity, Management, Security groups</option>
+            <option value="single">Single platform subscription: one Platform group</option>
           </select>
         </label>
         {check('corp', 'Corp landing zones', 'Private workloads connected to the hub')}

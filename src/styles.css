@@ -991,3 +991,9 @@ details.inputs summary {
   justify-content: flex-end;
   margin-top: 10px;
 }
+
+.dialog label.placement {
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 13px;
+}

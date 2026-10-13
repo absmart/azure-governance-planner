@@ -154,6 +154,34 @@ describe('buildIacModel', () => {
     expect(model({ privateCorp: false }).platform).toMatchObject({ privateDnsResourceGroup: false, privateDnsZones: [] });
   });
 
+  it('uses one platform subscription for a single platform group, and places it in Platform', () => {
+    const m = model({ platform: 'single' });
+    const names = m.inputs.map((i) => i.name);
+    expect(names).toContain('platform_subscription_id');
+    expect(names).not.toContain('management_subscription_id');
+    expect(names).not.toContain('private_dns_zone_subscription_id');
+    expect(m.aliases).toEqual({ management_subscription_id: 'platform_subscription_id', private_dns_zone_subscription_id: 'platform_subscription_id' });
+    expect(m.subscriptionPlacements).toEqual([{ managementGroupId: 'contoso-platform', input: 'platform_subscription_id' }]);
+    const sub = '11111111-2222-3333-4444-555555555555';
+    const options = { environment: 'prd', values: { platform_subscription_id: sub } };
+    const tfvars = generateIacFiles('terraform', m, options).find((f) => f.name === 'prd.tfvars')!.content;
+    expect(tfvars).toContain(`management_subscription_id = "${sub}"`);
+    expect(tfvars).toContain(`private_dns_zone_subscription_id = "${sub}"`);
+    const params = generateIacFiles('bicep', m, options).find((f) => f.name === 'prd.bicepparam')!.content;
+    expect(params).toContain(`management_subscription_id: '${sub}' // same as platform_subscription_id`);
+    expect(unsetInputs(m, options).map((i) => i.name)).not.toContain('platform_subscription_id');
+  });
+
+  it('places the management and connectivity subscriptions in their groups, unless turned off', () => {
+    const m = model();
+    expect(m.subscriptionPlacements).toEqual([
+      { managementGroupId: 'contoso-management', input: 'management_subscription_id' },
+      { managementGroupId: 'contoso-connectivity', input: 'private_dns_zone_subscription_id' },
+    ]);
+    const off = generateIacFiles('bicep', m, { environment: 'prd', values: {}, placeSubscriptions: false });
+    expect(JSON.parse(off.find((f) => f.name === 'lib/subscription-placements.json')!.content)).toEqual([]);
+  });
+
   it('asks for no DDoS plan by default', () => {
     expect(model().inputs.map((i) => i.name)).not.toContain('ddos_protection_plan_id');
     expect(model({ ddos: true }).inputs.map((i) => i.name)).toContain('ddos_protection_plan_id');

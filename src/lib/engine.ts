@@ -47,7 +47,7 @@ export interface DesignInput {
   /** Add the SP 800-53B privacy baseline to the NIST controls in scope. */
   nistPrivacy: boolean;
   enforcement: Enforcement;
-  /** "single" puts every platform subscription in one Platform management group. */
+  /** "single": one platform subscription (connectivity, identity, management, security) in one Platform management group. */
   platform: 'full' | 'single';
   corp: boolean;
   online: boolean;
@@ -319,7 +319,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     add('platform', 'root', ['platform', 'connectivity', 'management', 'security'], 'Platform');
     notes.push({
       level: 'info',
-      text: 'Single Platform management group: the Identity archetype (deny public IPs, management ports and subnets without NSGs) is not assigned, because it would block hub networking. Assign it to the identity subscription directly if needed.',
+      text: 'Single platform subscription: connectivity, identity, management and security share one subscription in the Platform management group, which gets the connectivity, management and security guardrails. The Identity archetype (deny public IPs, management ports and subnets without NSGs) is not assigned, because it would block hub networking.',
     });
   }
   add('landingzones', 'root', ['landing_zones'], 'Landing zones');

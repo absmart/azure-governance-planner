@@ -164,6 +164,19 @@ export function ExportDialog(props: { catalog: Catalog; design: Design; onClose:
               </div>
             </details>
 
+            {model.subscriptionPlacements.length > 0 && (
+              <label className="check placement">
+                <input
+                  type="checkbox"
+                  checked={settings.placeSubscriptions !== false}
+                  onChange={(e) => setSettings({ ...settings, placeSubscriptions: e.target.checked })}
+                />
+                Move {model.subscriptionPlacements.map((p) => p.input.replace(/_id$/, '').replace(/_/g, ' ')).join(' and ')} into{' '}
+                {model.subscriptionPlacements.map((p) => p.managementGroupId).join(' and ')}, so the policy assignments apply to{' '}
+                {model.subscriptionPlacements.length > 1 ? 'them' : 'it'}
+              </label>
+            )}
+
             {model.notes.length > 0 && (
               <ul className="issues">
                 {model.notes.map((n, i) => (

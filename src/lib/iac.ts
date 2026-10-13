@@ -138,6 +138,13 @@ export interface PlatformRoleAssignment {
   scope: string;
 }
 
+/** A subscription moved into a management group, so the group's policy assignments apply to it. */
+export interface SubscriptionPlacement {
+  managementGroupId: string;
+  /** Input holding the subscription ID. */
+  input: string;
+}
+
 export interface IacModel {
   rootName: string;
   alzRef: string;
@@ -147,7 +154,15 @@ export interface IacModel {
   assignments: IacAssignment[];
   platform: PlatformResources;
   platformRoleAssignments: PlatformRoleAssignment[];
+  /** Platform subscriptions to place in their management groups (when the export option is on). */
+  subscriptionPlacements: SubscriptionPlacement[];
   inputs: IacInput[];
+  /**
+   * Values the templates read under another input's name: with a single platform
+   * subscription, management_subscription_id and private_dns_zone_subscription_id
+   * are both platform_subscription_id.
+   */
+  aliases: Record<string, string>;
   /** Things the export changed or left out. */
   notes: string[];
 }
@@ -199,6 +214,8 @@ const RESOURCE_ID_INPUTS = new Set(['ddos_protection_plan_id']);
 
 const NEW_INPUT_DESCRIPTION: Record<string, string> = {
   management_subscription_id: 'The management subscription, for the Log Analytics workspace, data collection rules and AMA identity.',
+  platform_subscription_id:
+    'The single platform subscription (connectivity, identity, management and security together): the management resources and private DNS zones go here, and it is placed in the Platform management group.',
   management_resource_group_name: 'Resource group created in the management subscription for those resources.',
   log_analytics_workspace_name: 'Name of the Log Analytics workspace created in the management resource group.',
   ama_user_assigned_managed_identity_name: 'Name of the user-assigned identity Azure Monitor Agent authenticates with (created in the management resource group).',
@@ -212,6 +229,8 @@ export interface ExportOptions {
   environment: string;
   /** Values for the model's inputs, by name; empty or missing means the placeholder. */
   values: Record<string, string>;
+  /** Move the platform subscriptions into their management groups (default true). */
+  placeSubscriptions?: boolean;
 }
 
 const MG_SCOPED_DEFINITION = /^\/providers\/Microsoft\.Management\/managementGroups\/[^/]+\/providers\/Microsoft\.Authorization\//i;
@@ -381,6 +400,23 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
   if (platform.userAssignedIdentity && !inputUse.has('ama_user_assigned_managed_identity_name'))
     inputUse.set('ama_user_assigned_managed_identity_name', new Set());
   for (const rule of platform.dataCollectionRules) inputUse.set(RULE_NAME_INPUT[rule], new Set());
+  // Subscriptions. With a single platform subscription, one value serves them all.
+  const single = design.input.platform === 'single';
+  const aliases: Record<string, string> = {};
+  const subscriptionPlacements: SubscriptionPlacement[] = [];
+  const mgOf = (role: string) => design.mgs.find((m) => m.role === role)?.id;
+  if (single) {
+    for (const name of ['management_subscription_id', 'private_dns_zone_subscription_id'])
+      if (inputUse.delete(name)) aliases[name] = 'platform_subscription_id';
+    inputUse.set('platform_subscription_id', new Set());
+    subscriptionPlacements.push({ managementGroupId: mgOf('platform')!, input: 'platform_subscription_id' });
+  } else {
+    if (inputUse.has('management_subscription_id') && mgOf('management'))
+      subscriptionPlacements.push({ managementGroupId: mgOf('management')!, input: 'management_subscription_id' });
+    if (inputUse.has('private_dns_zone_subscription_id') && mgOf('connectivity'))
+      subscriptionPlacements.push({ managementGroupId: mgOf('connectivity')!, input: 'private_dns_zone_subscription_id' });
+  }
+
   const describe = new Map(library.defaults.map((d) => [d.default_name, d.description]));
   const defaultValue = (name: string): string => {
     switch (name) {
@@ -388,6 +424,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
       case 'private_dns_zone_region':
         return location;
       case 'management_subscription_id':
+      case 'platform_subscription_id':
         return '';
       default:
         if (NAME_DEFAULTS[name]) return NAME_DEFAULTS[name];
@@ -403,7 +440,8 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     placeholder: defaultValue(name),
     usedBy: [...users],
   }));
-  const order = (name: string) => (name === 'location' ? 0 : name.startsWith('management_') ? 1 : 2);
+  const order = (name: string) =>
+    name === 'location' ? 0 : name === 'platform_subscription_id' ? 1 : name.startsWith('management_') ? 2 : 3;
   inputs.sort((a, b) => order(a.name) - order(b.name) || a.name.localeCompare(b.name));
 
   return {
@@ -415,7 +453,9 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     assignments,
     platform,
     platformRoleAssignments,
+    subscriptionPlacements,
     inputs,
+    aliases,
     notes,
   };
 }
@@ -569,6 +609,9 @@ param platformRoleAssignments array = []
 @description('Log Analytics workspace retention in days.')
 param logAnalyticsRetentionInDays int = 30
 
+@description('Subscriptions to move into management groups: { managementGroupId, input }, input naming the policyValues key with the subscription ID.')
+param subscriptionPlacements array = []
+
 var rootId = managementGroups[0].id
 var defaultParent = empty(parentManagementGroupId) ? tenant().tenantId : parentManagementGroupId
 
@@ -713,6 +756,16 @@ module platformRoles 'modules/role-assignment.bicep' = [
       roleDefinitionId: g.roleDefinitionId
       description: 'Remediation for policy assignment \${g.assignment} at \${g.managementGroupId}'
     }
+  }
+]
+
+// Platform subscriptions in their management groups, so its policy assignments apply to them.
+var placements = filter(subscriptionPlacements, p => !empty(values[?p.input] ?? ''))
+
+resource subscriptionPlacement 'Microsoft.Management/managementGroups/subscriptions@2023-04-01' = [
+  for p in placements: {
+    name: '\${p.managementGroupId}/\${values[p.input]}'
+    dependsOn: [mgs]
   }
 ]
 
@@ -1113,10 +1166,13 @@ export function toBicepParams(model: IacModel, options: ExportOptions): string {
   const location = model.inputs.find((i) => i.name === 'location');
   const values = model.inputs.filter((i) => i.name !== 'location');
   const unset = new Set(unsetInputs(model, options).map((i) => i.name));
-  const lines = values.flatMap((i) => [
-    `  // ${i.description}${unset.has(i.name) ? ' SET THIS: still the ALZ placeholder.' : ''}`,
-    `  ${i.name}: ${bicepString(inputValue(i, model, options))}`,
-  ]);
+  const lines = [
+    ...values.flatMap((i) => [
+      `  // ${i.description}${unset.has(i.name) ? ' SET THIS: still the ALZ placeholder.' : ''}`,
+      `  ${i.name}: ${bicepString(inputValue(i, model, options))}`,
+    ]),
+    ...aliasLines(model, options).map(([name, value, of]) => `  ${name}: ${bicepString(value)} // same as ${of}`),
+  ];
   return `${commentBlock('//', [
     `${model.rootName}, ${env} environment. ${GENERATOR}`,
     '',
@@ -1140,6 +1196,7 @@ param policySetDefinitions = loadJsonContent('lib/policy-set-definitions.json')
 param policyAssignments = loadJsonContent('lib/policy-assignments.json')
 param platformResources = loadJsonContent('lib/platform-resources.json')
 param platformRoleAssignments = loadJsonContent('lib/platform-role-assignments.json')
+param subscriptionPlacements = loadJsonContent('lib/subscription-placements.json')
 `;
 }
 
@@ -1302,6 +1359,15 @@ variable "platform_role_assignments" {
     assignment          = string
     role_definition_id  = string
     scope               = string
+  }))
+  default = []
+}
+
+variable "subscription_placements" {
+  description = "Subscriptions to move into management groups. input names the policy_values key holding the subscription ID."
+  type = list(object({
+    management_group_id = string
+    input               = string
   }))
   default = []
 }
@@ -1683,6 +1749,16 @@ resource "azurerm_role_assignment" "platform" {
   principal_type     = "ServicePrincipal"
 }
 
+# Platform subscriptions in their management groups, so its policy assignments apply to them.
+resource "azurerm_management_group_subscription_association" "platform" {
+  for_each = {
+    for p in var.subscription_placements : "\${p.management_group_id}/\${p.input}" => p
+    if lookup(var.policy_values, p.input, "") != ""
+  }
+  management_group_id = local.management_group_ids[each.value.management_group_id]
+  subscription_id     = "/subscriptions/\${var.policy_values[each.value.input]}"
+}
+
 output "management_group_ids" {
   description = "Resource IDs of the management groups, by name."
   value       = local.management_group_ids
@@ -1759,6 +1835,7 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
       private_dns_resource_group: model.platform.privateDnsResourceGroup,
       private_dns_zones: platform.privateDnsZones,
     },
+    subscription_placements: placementsFor(model, options).map((p) => ({ management_group_id: p.managementGroupId, input: p.input })),
     platform_role_assignments: model.platformRoleAssignments.map((g) => ({
       management_group_id: g.managementGroupId,
       assignment: g.assignment,
@@ -1784,6 +1861,17 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
   });
 }
 
+/** [name, value, input it repeats] for each alias. */
+function aliasLines(model: IacModel, options: ExportOptions): [string, string, string][] {
+  return Object.entries(model.aliases).map(([name, of]) => {
+    const input = model.inputs.find((i) => i.name === of);
+    return [name, input ? inputValue(input, model, options) : '', of];
+  });
+}
+
+/** Placements for the files: none when the option is off. */
+const placementsFor = (model: IacModel, options: ExportOptions) => (options.placeSubscriptions === false ? [] : model.subscriptionPlacements);
+
 /** location and policy_values as HCL attribute lines. */
 function terraformValues(model: IacModel, options: ExportOptions): string[] {
   const location = model.inputs.find((i) => i.name === 'location');
@@ -1797,6 +1885,7 @@ function terraformValues(model: IacModel, options: ExportOptions): string[] {
       `  # ${i.description}${unset.has(i.name) ? ' SET THIS: still the ALZ placeholder.' : ''}`,
       `  ${i.name} = ${tq(inputValue(i, model, options))}`,
     ]),
+    ...aliasLines(model, options).flatMap(([name, value, of]) => [`  # Same as ${of}.`, `  ${name} = ${tq(value)}`]),
     '}',
   ];
 }
@@ -1903,7 +1992,7 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 ${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
     unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
-- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
+${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
 - **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
   their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
@@ -1936,6 +2025,15 @@ function platformSection(model: IacModel): string {
       };`,
   ].filter(Boolean);
   return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
+}
+
+function placementSection(model: IacModel, options: ExportOptions): string {
+  const placements = placementsFor(model, options);
+  if (!placements.length) return '';
+  const list = placements.map((p) => `\`${p.input}\` into \`${p.managementGroupId}\``).join(', ');
+  return `- **Subscriptions.** The export moves ${list}, so those management groups' assignments apply. Moving a
+  subscription needs Owner on it and on its current management group, and it picks up the new group's policies straight away.
+`;
 }
 
 function platformScopes(model: IacModel): string {
@@ -2060,6 +2158,7 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'lib/management-groups.json', content: json(model.managementGroups), description: 'design' },
         { name: 'lib/platform-resources.json', content: json(platformFor(model, options)), description: 'design' },
         { name: 'lib/platform-role-assignments.json', content: json(model.platformRoleAssignments), description: 'design' },
+        { name: 'lib/subscription-placements.json', content: json(placementsFor(model, options)), description: 'design' },
         { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
         { name: 'lib/policy-set-definitions.json', content: json(model.policySetDefinitions), description: 'design' },
         { name: 'lib/policy-definitions.json', content: json(model.policyDefinitions), description: 'design' },

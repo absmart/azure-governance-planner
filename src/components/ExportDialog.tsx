@@ -10,6 +10,8 @@ import {
   type IacFormat,
   buildIacModel,
   generateIacFiles,
+  platformSummary,
+  roleAssignmentCount,
   unsetInputs,
 } from '../lib/iac';
 import { STORAGE_KEYS, readJson, writeJson } from '../lib/storage';
@@ -118,8 +120,9 @@ export function ExportDialog(props: { catalog: Catalog; design: Design; onClose:
             <p className="muted">
               Creates the {model.managementGroups.length} management groups, {model.policyDefinitions.length} custom policy definitions
               and {model.policySetDefinitions.length} custom initiatives (ALZ library {model.alzRef}), all {model.assignments.length}{' '}
-              assignments with their enforcement modes and parameters, and{' '}
-              {model.assignments.reduce((n, a) => n + a.roleDefinitionIds.length, 0)} role assignments for the remediation identities.
+              assignments with their enforcement modes and parameters, and {roleAssignmentCount(model)} role assignments for the
+              remediation identities.
+              {platformSummary(model) && <> It also creates {platformSummary(model)}, and points the policies at them.</>}
               The template is generic; the design is data and this environment's values go in a small values file.
               {settings.format === 'terragrunt' && ' Terragrunt adds root.hcl for remote state and the provider.'}
             </p>
@@ -134,7 +137,8 @@ export function ExportDialog(props: { catalog: Catalog; design: Design; onClose:
                 )}
               </summary>
               <p className="muted">
-                Resources ALZ's DeployIfNotExists policies point at. They deploy with placeholders, but remediation fails until they're set.
+                Where the platform resources go, and the existing resources ALZ's DeployIfNotExists policies point at. Values at a
+                placeholder deploy, but remediation fails until they're set.
               </p>
               <div className="input-grid">
                 <label className="field">

@@ -109,6 +109,31 @@ export interface IacAssignment {
   roleDefinitionIds: string[];
 }
 
+export type DataCollectionRule = 'vmInsights' | 'changeTracking' | 'defenderSql';
+
+/** Platform resources the templates create for ALZ's DeployIfNotExists policies to point at. */
+export interface PlatformResources {
+  /** In the management subscription: a resource group with these. */
+  logAnalyticsWorkspace: boolean;
+  /** The user-assigned identity Azure Monitor Agent authenticates with. */
+  userAssignedIdentity: boolean;
+  dataCollectionRules: DataCollectionRule[];
+  /** In the connectivity subscription: the resource group for the private DNS zones. */
+  privateDnsResourceGroup: boolean;
+}
+
+/**
+ * A role a remediation identity needs on a resource its parameters point at,
+ * outside its own management group (ALZ grants these too).
+ */
+export interface PlatformRoleAssignment {
+  managementGroupId: string;
+  assignment: string;
+  roleDefinitionId: string;
+  /** "management" or "privateDns" resource group, or the input holding a resource ID (its resource group). */
+  scope: string;
+}
+
 export interface IacModel {
   rootName: string;
   alzRef: string;
@@ -116,10 +141,34 @@ export interface IacModel {
   policyDefinitions: ArmDefinition[];
   policySetDefinitions: ArmDefinition[];
   assignments: IacAssignment[];
+  platform: PlatformResources;
+  platformRoleAssignments: PlatformRoleAssignment[];
   inputs: IacInput[];
   /** Things the export changed or left out. */
   notes: string[];
 }
+
+/** ALZ inputs the templates fill with the platform resources they create. */
+const CREATED_INPUTS: Record<string, { creates: keyof PlatformResources; rule?: DataCollectionRule }> = {
+  log_analytics_workspace_id: { creates: 'logAnalyticsWorkspace' },
+  ama_user_assigned_managed_identity_id: { creates: 'userAssignedIdentity' },
+  ama_user_assigned_managed_identity_name: { creates: 'userAssignedIdentity' },
+  ama_vm_insights_data_collection_rule_id: { creates: 'dataCollectionRules', rule: 'vmInsights' },
+  ama_change_tracking_data_collection_rule_id: { creates: 'dataCollectionRules', rule: 'changeTracking' },
+  ama_mdfc_sql_data_collection_rule_id: { creates: 'dataCollectionRules', rule: 'defenderSql' },
+};
+
+const PRIVATE_DNS_INPUTS = new Set(['private_dns_zone_subscription_id', 'private_dns_zone_resource_group_name']);
+
+/** Inputs holding a resource ID the export doesn't create; identities get their roles on its resource group. */
+const RESOURCE_ID_INPUTS = new Set(['ddos_protection_plan_id']);
+
+const NEW_INPUT_DESCRIPTION: Record<string, string> = {
+  management_subscription_id: 'The management subscription, for the Log Analytics workspace, data collection rules and AMA identity.',
+  management_resource_group_name: 'Resource group created in the management subscription for those resources.',
+  management_name_prefix: 'Prefix of their names: law-<prefix>-<location>, uami-<prefix>-ama, dcr-<prefix>-<rule>.',
+  private_dns_zone_resource_group_name: 'Resource group created in the private DNS zone subscription for the private link DNS zones.',
+};
 
 export interface ExportOptions {
   environment: string;
@@ -249,22 +298,74 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
       `${droppedPlaceholders} ALZ placeholder parameter values were left out so the definitions' defaults apply (for private DNS, the zone IDs are built from the DNS subscription, resource group and region).`,
     );
 
+  // Platform resources: created for the inputs that would otherwise point at existing ones.
+  const platform: PlatformResources = {
+    logAnalyticsWorkspace: false,
+    userAssignedIdentity: false,
+    dataCollectionRules: [],
+    privateDnsResourceGroup: false,
+  };
+  for (const name of inputUse.keys()) {
+    const created = CREATED_INPUTS[name];
+    if (created?.rule) platform.dataCollectionRules.push(created.rule);
+    else if (created) platform[created.creates as 'logAnalyticsWorkspace' | 'userAssignedIdentity'] = true;
+    if (PRIVATE_DNS_INPUTS.has(name)) platform.privateDnsResourceGroup = true;
+  }
+  // Data collection rules send to the workspace.
+  if (platform.dataCollectionRules.length) platform.logAnalyticsWorkspace = true;
+  platform.dataCollectionRules.sort();
+  const management = platform.logAnalyticsWorkspace || platform.userAssignedIdentity;
+
+  // Remediation identities get their roles on the resource groups their parameters point at.
+  const platformRoleAssignments: PlatformRoleAssignment[] = [];
+  for (const a of assignments) {
+    if (!a.identity || !a.roleDefinitionIds.length) continue;
+    const scopes = new Set<string>();
+    for (const input of Object.values(a.inputs)) {
+      if (CREATED_INPUTS[input]) scopes.add('management');
+      else if (PRIVATE_DNS_INPUTS.has(input)) scopes.add('privateDns');
+      else if (RESOURCE_ID_INPUTS.has(input)) scopes.add(input);
+    }
+    for (const scope of scopes)
+      for (const roleDefinitionId of a.roleDefinitionIds)
+        platformRoleAssignments.push({ managementGroupId: a.managementGroupId, assignment: a.name, roleDefinitionId, scope });
+  }
+
   const location = design.input.allowedLocations.map((l) => l.trim()).find(Boolean) ?? 'eastus2';
   if (!inputUse.has('location')) inputUse.set('location', new Set());
+  for (const name of Object.keys(CREATED_INPUTS)) inputUse.delete(name);
+  if (management)
+    for (const name of ['management_subscription_id', 'management_resource_group_name', 'management_name_prefix'])
+      inputUse.set(name, new Set());
   const describe = new Map(library.defaults.map((d) => [d.default_name, d.description]));
+  const defaultValue = (name: string): string => {
+    switch (name) {
+      case 'location':
+      case 'private_dns_zone_region':
+        return location;
+      case 'management_subscription_id':
+        return '';
+      case 'management_resource_group_name':
+        return `rg-${root.id}-management-${location}`;
+      case 'management_name_prefix':
+        return root.id;
+      case 'private_dns_zone_resource_group_name':
+        return `rg-${root.id}-private-dns-${location}`;
+      default:
+        return (placeholders.get(name) ?? '').replace(LOCATION_TOKEN, location);
+    }
+  };
   const inputs: IacInput[] = [...inputUse].map(([name, users]) => ({
     name,
     description:
       name === 'location'
-        ? 'Region for the policy assignments’ managed identities and the resources their remediation deploys.'
-        : (describe.get(name) ?? name),
-    placeholder:
-      name === 'location' || name === 'private_dns_zone_region'
-        ? location
-        : (placeholders.get(name) ?? '').replace(LOCATION_TOKEN, location),
+        ? 'Region for the platform resources, the policy assignments’ managed identities and the resources their remediation deploys.'
+        : (NEW_INPUT_DESCRIPTION[name] ?? describe.get(name) ?? name),
+    placeholder: defaultValue(name),
     usedBy: [...users],
   }));
-  inputs.sort((a, b) => (a.name === 'location' ? -1 : b.name === 'location' ? 1 : a.name.localeCompare(b.name)));
+  const order = (name: string) => (name === 'location' ? 0 : name.startsWith('management_') ? 1 : 2);
+  inputs.sort((a, b) => order(a.name) - order(b.name) || a.name.localeCompare(b.name));
 
   return {
     rootName: root.displayName,
@@ -273,6 +374,8 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     policyDefinitions: [...definitions.values()],
     policySetDefinitions: [...sets.values()],
     assignments,
+    platform,
+    platformRoleAssignments,
     inputs,
     notes,
   };
@@ -333,11 +436,33 @@ const json = (value: unknown) => JSON.stringify(value, null, 2) + '\n';
 
 const environmentOf = (options: ExportOptions) => options.environment.trim().replace(/[^A-Za-z0-9_-]+/g, '-') || 'prod';
 
+/** The platform resources the export creates, in a phrase ("" for none). */
+export function platformSummary(model: IacModel): string {
+  const { platform } = model;
+  const parts = [
+    platform.logAnalyticsWorkspace && 'a Log Analytics workspace',
+    platform.dataCollectionRules.length &&
+      `${platform.dataCollectionRules.length} data collection rule${platform.dataCollectionRules.length > 1 ? 's' : ''}`,
+    platform.userAssignedIdentity && 'the Azure Monitor Agent identity',
+  ].filter(Boolean) as string[];
+  const management = parts.length
+    ? `${parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0]} in the management subscription`
+    : '';
+  const dns = platform.privateDnsResourceGroup ? 'the private DNS zone resource group' : '';
+  return [management, dns].filter(Boolean).join(', and ');
+}
+
+/** Role assignments the export makes: at management groups, and on platform resource groups. */
+export const roleAssignmentCount = (model: IacModel) =>
+  model.assignments.reduce((n, a) => n + a.roleDefinitionIds.length, 0) + model.platformRoleAssignments.length;
+
 function summaryLines(model: IacModel): string[] {
+  const platform = platformSummary(model);
   return [
     `${model.managementGroups.length} management groups under ${model.rootName}, ${model.policyDefinitions.length} custom policy definitions,`,
     `${model.policySetDefinitions.length} custom initiatives, ${model.assignments.length} policy assignments and`,
-    `${model.assignments.reduce((n, a) => n + a.roleDefinitionIds.length, 0)} role assignments for their managed identities.`,
+    `${roleAssignmentCount(model)} role assignments for their managed identities.`,
+    ...(platform ? [`Platform resources: ${platform}.`] : []),
     `ALZ definitions are from the Azure Landing Zones library, ${model.alzRef}.`,
   ];
 }
@@ -378,8 +503,83 @@ param policySetDefinitions array = []
 @description('Policy assignments, each with the managementGroupId it is assigned at.')
 param policyAssignments array = []
 
+@description('Platform resources to create for the policies to point at: { logAnalyticsWorkspace, userAssignedIdentity, dataCollectionRules, privateDnsResourceGroup }.')
+param platformResources object = {}
+
+@description('Roles remediation identities get on the platform resource groups: { managementGroupId, assignment, roleDefinitionId, scope }.')
+param platformRoleAssignments array = []
+
+@description('Log Analytics workspace retention in days.')
+param logAnalyticsRetentionInDays int = 30
+
 var rootId = managementGroups[0].id
 var defaultParent = empty(parentManagementGroupId) ? tenant().tenantId : parentManagementGroupId
+
+// Platform resources. Their IDs are built from names, so the policies can use them before they exist.
+var platform = union({ logAnalyticsWorkspace: false, userAssignedIdentity: false, dataCollectionRules: [], privateDnsResourceGroup: false }, platformResources)
+var deployManagement = platform.logAnalyticsWorkspace || platform.userAssignedIdentity
+// Conditional modules still need a valid scope.
+var unusedSubscription = '00000000-0000-0000-0000-000000000000'
+var management = {
+  subscriptionId: deployManagement ? policyValues.management_subscription_id : unusedSubscription
+  resourceGroupName: policyValues.?management_resource_group_name ?? 'unused'
+  prefix: policyValues.?management_name_prefix ?? rootId
+}
+var privateDns = {
+  subscriptionId: platform.privateDnsResourceGroup ? policyValues.private_dns_zone_subscription_id : unusedSubscription
+  resourceGroupName: policyValues.?private_dns_zone_resource_group_name ?? 'unused'
+}
+var names = {
+  workspace: 'law-\${management.prefix}-\${location}'
+  identity: 'uami-\${management.prefix}-ama'
+  vmInsights: 'dcr-\${management.prefix}-vminsights'
+  changeTracking: 'dcr-\${management.prefix}-changetracking'
+  defenderSql: 'dcr-\${management.prefix}-defendersql'
+}
+var managementGroupScope = '/subscriptions/\${management.subscriptionId}/resourceGroups/\${management.resourceGroupName}'
+var platformValues = deployManagement
+  ? {
+      log_analytics_workspace_id: '\${managementGroupScope}/providers/Microsoft.OperationalInsights/workspaces/\${names.workspace}'
+      ama_user_assigned_managed_identity_id: '\${managementGroupScope}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/\${names.identity}'
+      ama_user_assigned_managed_identity_name: names.identity
+      ama_vm_insights_data_collection_rule_id: '\${managementGroupScope}/providers/Microsoft.Insights/dataCollectionRules/\${names.vmInsights}'
+      ama_change_tracking_data_collection_rule_id: '\${managementGroupScope}/providers/Microsoft.Insights/dataCollectionRules/\${names.changeTracking}'
+      ama_mdfc_sql_data_collection_rule_id: '\${managementGroupScope}/providers/Microsoft.Insights/dataCollectionRules/\${names.defenderSql}'
+    }
+  : {}
+var values = union(policyValues, { location: location }, platformValues)
+
+module managementResourceGroup 'modules/resource-group.bicep' = if (deployManagement) {
+  name: take('management-rg-\${rootId}', 64)
+  scope: subscription(management.subscriptionId)
+  params: {
+    name: management.resourceGroupName
+    location: location
+  }
+}
+
+module managementResources 'modules/management-resources.bicep' = if (deployManagement) {
+  name: take('management-resources-\${rootId}', 64)
+  scope: resourceGroup(management.subscriptionId, management.resourceGroupName)
+  params: {
+    location: location
+    names: names
+    logAnalyticsWorkspace: platform.logAnalyticsWorkspace
+    userAssignedIdentity: platform.userAssignedIdentity
+    dataCollectionRules: platform.dataCollectionRules
+    retentionInDays: logAnalyticsRetentionInDays
+  }
+  dependsOn: [managementResourceGroup]
+}
+
+module privateDnsResourceGroup 'modules/resource-group.bicep' = if (platform.privateDnsResourceGroup) {
+  name: take('private-dns-rg-\${rootId}', 64)
+  scope: subscription(privateDns.subscriptionId)
+  params: {
+    name: privateDns.resourceGroupName
+    location: location
+  }
+}
 
 // One at a time, in order, so each parent exists before its children.
 @batchSize(1)
@@ -413,14 +613,335 @@ module assignments 'modules/policy-assignments.bicep' = [
     scope: managementGroup(mg.id)
     params: {
       location: location
-      policyValues: union(policyValues, { location: location })
+      policyValues: values
       policyAssignments: filter(policyAssignments, a => a.managementGroupId == mg.id)
     }
-    dependsOn: [definitions]
+    dependsOn: [definitions, managementResources, privateDnsResourceGroup]
+  }
+]
+
+// Skips grants on resources still at an ALZ placeholder ID.
+var managementGroupIds = map(managementGroups, mg => mg.id)
+var grants = filter(
+  platformRoleAssignments,
+  g => g.scope == 'management' || g.scope == 'privateDns' || !contains(values[?g.scope] ?? unusedSubscription, unusedSubscription)
+)
+
+module platformRoles 'modules/role-assignment.bicep' = [
+  for g in grants: {
+    name: take('policy-role-\${uniqueString(g.managementGroupId, g.assignment, g.scope, g.roleDefinitionId)}', 64)
+    scope: resourceGroup(
+      g.scope == 'management'
+        ? management.subscriptionId
+        : g.scope == 'privateDns' ? privateDns.subscriptionId : split(values[g.scope], '/')[2],
+      g.scope == 'management'
+        ? management.resourceGroupName
+        : g.scope == 'privateDns' ? privateDns.resourceGroupName : split(values[g.scope], '/')[4]
+    )
+    params: {
+      principalId: assignments[indexOf(managementGroupIds, g.managementGroupId)].outputs.principalIds[indexOf(
+        map(filter(policyAssignments, a => a.managementGroupId == g.managementGroupId), a => a.name),
+        g.assignment
+      )]
+      roleDefinitionId: g.roleDefinitionId
+      description: 'Remediation for policy assignment \${g.assignment} at \${g.managementGroupId}'
+    }
   }
 ]
 
 output managementGroupIds array = [for (mg, i) in managementGroups: mgs[i].id]
+`;
+}
+
+export function toBicepResourceGroupModule(): string {
+  return `${commentBlock('//', ['A resource group.', GENERATOR])}
+targetScope = 'subscription'
+
+param name string
+param location string
+
+resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
+  name: name
+  location: location
+}
+`;
+}
+
+export function toBicepRoleAssignmentModule(): string {
+  return `${commentBlock('//', ["A role for a policy assignment's managed identity on a resource group.", GENERATOR])}
+targetScope = 'resourceGroup'
+
+param principalId string
+param roleDefinitionId string
+param description string = ''
+
+resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, principalId, roleDefinitionId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleDefinitionId)
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    description: description
+  }
+}
+`;
+}
+
+/** Workspace solutions each data collection rule's data needs. */
+const SOLUTIONS: Record<DataCollectionRule, string[]> = {
+  vmInsights: ['VMInsights'],
+  changeTracking: ['ChangeTracking'],
+  defenderSql: ['SQLAdvancedThreatProtection', 'SQLVulnerabilityAssessment'],
+};
+
+const CHANGE_TRACKING_STREAMS = ['Microsoft-ConfigurationChange', 'Microsoft-ConfigurationChangeV2', 'Microsoft-ConfigurationData'];
+const DEFENDER_SQL_STREAMS = [
+  'Microsoft-DefenderForSqlAlerts',
+  'Microsoft-DefenderForSqlLogins',
+  'Microsoft-DefenderForSqlTelemetry',
+  'Microsoft-DefenderForSqlScanEvents',
+  'Microsoft-DefenderForSqlScanResults',
+];
+
+/** Change Tracking and Inventory settings, as ALZ's data collection rule sets them. */
+const changeTrackingSettings = (os: 'Windows' | 'Linux') => ({
+  enableFiles: true,
+  enableSoftware: true,
+  enableRegistry: os === 'Windows',
+  enableServices: true,
+  enableInventory: true,
+  ...(os === 'Windows'
+    ? {
+        registrySettings: {
+          registryCollectionFrequency: 3000,
+          registryInfo: [
+            {
+              name: 'Registry_1',
+              groupTag: 'Recommended',
+              enabled: false,
+              recurse: true,
+              description: '',
+              keyName: 'HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Scripts\\Startup',
+              valueName: '',
+            },
+          ],
+        },
+      }
+    : {}),
+  fileSettings: {
+    fileCollectionFrequency: 900,
+    fileInfo:
+      os === 'Linux'
+        ? [
+            {
+              name: 'ChangeTrackingLinuxPath_default',
+              enabled: true,
+              destinationPath: '/etc/.*.conf',
+              useSudo: true,
+              recurse: true,
+              maxContentsReturnable: 5000000,
+              pathType: 'File',
+              type: 'File',
+              links: 'Follow',
+              maxOutputSize: 500000,
+              groupTag: 'Recommended',
+            },
+          ]
+        : [],
+  },
+  softwareSettings: { softwareCollectionFrequency: 300 },
+  inventorySettings: { inventoryCollectionFrequency: 36000 },
+  servicesSettings: { serviceCollectionFrequency: 300 },
+});
+
+/** A JSON value as a Bicep literal. */
+function bicepValue(value: unknown, indent = ''): string {
+  const next = indent + '  ';
+  if (Array.isArray(value)) return value.length ? `[\n${value.map((v) => next + bicepValue(v, next)).join('\n')}\n${indent}]` : '[]';
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value);
+    return entries.length
+      ? `{\n${entries.map(([k, v]) => `${next}${/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : bicepString(k)}: ${bicepValue(v, next)}`).join('\n')}\n${indent}}`
+      : '{}';
+  }
+  return typeof value === 'string' ? bicepString(value) : String(value);
+}
+
+export function toBicepManagementModule(): string {
+  const solutions = Object.entries(SOLUTIONS)
+    .map(([rule, list]) => `  ${rule}: [${list.map(bicepString).join(', ')}]`)
+    .join('\n');
+  return `${commentBlock('//', [
+    "Management resources ALZ's policies point at: the Log Analytics workspace, the",
+    'Azure Monitor Agent identity and the data collection rules.',
+    GENERATOR,
+  ])}
+targetScope = 'resourceGroup'
+
+param location string
+@description('workspace, identity, vmInsights, changeTracking and defenderSql names.')
+param names object
+param logAnalyticsWorkspace bool
+param userAssignedIdentity bool
+@description('Any of vmInsights, changeTracking, defenderSql.')
+param dataCollectionRules array
+param retentionInDays int = 30
+
+resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (logAnalyticsWorkspace) {
+  name: names.workspace
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: retentionInDays
+  }
+}
+
+// Workspace solutions the rules' data needs.
+var solutionsByRule = {
+${solutions}
+}
+var solutions = flatten(map(dataCollectionRules, rule => solutionsByRule[rule]))
+
+resource solution 'Microsoft.OperationsManagement/solutions@2015-11-01-preview' = [
+  for s in solutions: if (logAnalyticsWorkspace) {
+    name: '\${s}(\${names.workspace})'
+    location: location
+    plan: {
+      name: '\${s}(\${names.workspace})'
+      publisher: 'Microsoft'
+      product: 'OMSGallery/\${s}'
+      promotionCode: ''
+    }
+    properties: {
+      workspaceResourceId: workspace.id
+    }
+  }
+]
+
+resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (userAssignedIdentity) {
+  name: names.identity
+  location: location
+}
+
+resource vmInsights 'Microsoft.Insights/dataCollectionRules@2023-03-11' = if (contains(dataCollectionRules, 'vmInsights')) {
+  name: names.vmInsights
+  location: location
+  properties: {
+    description: 'VM Insights performance counters and dependency map, for ALZ\\'s Deploy-VM-Monitoring policies.'
+    dataSources: {
+      performanceCounters: [
+        {
+          name: 'VMInsightsPerfCounters'
+          streams: ['Microsoft-InsightsMetrics']
+          samplingFrequencyInSeconds: 60
+          counterSpecifiers: ['\\\\VmInsights\\\\DetailedMetrics']
+        }
+      ]
+      extensions: [
+        {
+          name: 'DependencyAgentDataSource'
+          streams: ['Microsoft-ServiceMap']
+          extensionName: 'DependencyAgent'
+          extensionSettings: {}
+        }
+      ]
+    }
+    destinations: {
+      logAnalytics: [
+        {
+          name: 'VMInsightsPerf-Logs-Dest'
+          workspaceResourceId: workspace.id
+        }
+      ]
+    }
+    dataFlows: [
+      {
+        streams: ['Microsoft-InsightsMetrics']
+        destinations: ['VMInsightsPerf-Logs-Dest']
+      }
+      {
+        streams: ['Microsoft-ServiceMap']
+        destinations: ['VMInsightsPerf-Logs-Dest']
+      }
+    ]
+  }
+}
+
+resource changeTracking 'Microsoft.Insights/dataCollectionRules@2023-03-11' = if (contains(dataCollectionRules, 'changeTracking')) {
+  name: names.changeTracking
+  location: location
+  properties: {
+    description: 'Change Tracking and Inventory, for ALZ\\'s Deploy-*-ChangeTrack policies.'
+    dataSources: {
+      extensions: [
+        {
+          name: 'CTDataSource-Windows'
+          streams: ${bicepValue(CHANGE_TRACKING_STREAMS, '          ')}
+          extensionName: 'ChangeTracking-Windows'
+          extensionSettings: ${bicepValue(changeTrackingSettings('Windows'), '          ')}
+        }
+        {
+          name: 'CTDataSource-Linux'
+          streams: ${bicepValue(CHANGE_TRACKING_STREAMS, '          ')}
+          extensionName: 'ChangeTracking-Linux'
+          extensionSettings: ${bicepValue(changeTrackingSettings('Linux'), '          ')}
+        }
+      ]
+    }
+    destinations: {
+      logAnalytics: [
+        {
+          name: 'Microsoft-CT-Dest'
+          workspaceResourceId: workspace.id
+        }
+      ]
+    }
+    dataFlows: [
+      {
+        streams: ${bicepValue(CHANGE_TRACKING_STREAMS, '        ')}
+        destinations: ['Microsoft-CT-Dest']
+      }
+    ]
+  }
+  dependsOn: [solution]
+}
+
+resource defenderSql 'Microsoft.Insights/dataCollectionRules@2023-03-11' = if (contains(dataCollectionRules, 'defenderSql')) {
+  name: names.defenderSql
+  location: location
+  properties: {
+    description: 'Microsoft Defender for SQL on machines, for ALZ\\'s Deploy-MDFC-DefSQL-AMA policy.'
+    dataSources: {
+      extensions: [
+        {
+          name: 'MicrosoftDefenderForSQL'
+          streams: ${bicepValue(DEFENDER_SQL_STREAMS, '          ')}
+          extensionName: 'MicrosoftDefenderForSQL'
+          extensionSettings: {
+            enableCollectionOfSqlQueriesForSecurityResearch: false
+          }
+        }
+      ]
+    }
+    destinations: {
+      logAnalytics: [
+        {
+          name: 'LogAnalyticsDest'
+          workspaceResourceId: workspace.id
+        }
+      ]
+    }
+    dataFlows: [
+      {
+        streams: ${bicepValue(DEFENDER_SQL_STREAMS, '        ')}
+        destinations: ['LogAnalyticsDest']
+      }
+    ]
+  }
+  dependsOn: [solution]
+}
 `;
 }
 
@@ -495,6 +1016,9 @@ resource roleAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     }
   }
 ]
+
+@description('Principal IDs of the assignment identities, in policyAssignments order (empty without one).')
+output principalIds array = [for (a, i) in policyAssignments: assignments[i].?identity.?principalId ?? '']
 `;
 }
 
@@ -528,6 +1052,8 @@ param managementGroups = loadJsonContent('lib/management-groups.json')
 param policyDefinitions = loadJsonContent('lib/policy-definitions.json')
 param policySetDefinitions = loadJsonContent('lib/policy-set-definitions.json')
 param policyAssignments = loadJsonContent('lib/policy-assignments.json')
+param platformResources = loadJsonContent('lib/platform-resources.json')
+param platformRoleAssignments = loadJsonContent('lib/platform-role-assignments.json')
 `;
 }
 
@@ -572,6 +1098,20 @@ terraform {
   }
 }
 ${provider}
+# Platform resources go in the management and private DNS zone subscriptions
+# (policy_values management_subscription_id / private_dns_zone_subscription_id).
+provider "azurerm" {
+  alias           = "management"
+  subscription_id = lookup(var.policy_values, "management_subscription_id", "") != "" ? var.policy_values["management_subscription_id"] : null
+  features {}
+}
+
+provider "azurerm" {
+  alias           = "connectivity"
+  subscription_id = lookup(var.policy_values, "private_dns_zone_subscription_id", "") != "" ? var.policy_values["private_dns_zone_subscription_id"] : null
+  features {}
+}
+
 variable "location" {
   description = "Region of the policy assignments' managed identities and the resources their remediation deploys."
   type        = string
@@ -655,6 +1195,34 @@ variable "policy_assignments" {
     role_definition_ids = optional(list(string), [])
   }))
   default = []
+}
+
+variable "platform_resources" {
+  description = "Platform resources to create for the policies to point at. data_collection_rules: any of vmInsights, changeTracking, defenderSql."
+  type = object({
+    log_analytics_workspace    = optional(bool, false)
+    user_assigned_identity     = optional(bool, false)
+    data_collection_rules      = optional(list(string), [])
+    private_dns_resource_group = optional(bool, false)
+  })
+  default = {}
+}
+
+variable "platform_role_assignments" {
+  description = "Roles remediation identities get on platform resource groups. scope: management, privateDns or a policy_values key holding a resource ID."
+  type = list(object({
+    management_group_id = string
+    assignment          = string
+    role_definition_id  = string
+    scope               = string
+  }))
+  default = []
+}
+
+variable "log_analytics_retention_in_days" {
+  description = "Log Analytics workspace retention in days."
+  type        = number
+  default     = 30
 }
 
 locals {
@@ -748,8 +1316,209 @@ resource "azurerm_management_group_policy_set_definition" "this" {
   depends_on = [azurerm_policy_definition.this]
 }
 
+# --- Platform resources --------------------------------------------------------
+
 locals {
-  policy_values = merge(var.policy_values, { location = var.location })
+  platform          = var.platform_resources
+  deploy_management = local.platform.log_analytics_workspace || local.platform.user_assigned_identity
+  management_prefix = lookup(var.policy_values, "management_name_prefix", local.root_id)
+  names = {
+    workspace       = "law-\${local.management_prefix}-\${var.location}"
+    identity        = "uami-\${local.management_prefix}-ama"
+    vm_insights     = "dcr-\${local.management_prefix}-vminsights"
+    change_tracking = "dcr-\${local.management_prefix}-changetracking"
+    defender_sql    = "dcr-\${local.management_prefix}-defendersql"
+  }
+  # Workspace solutions each data collection rule's data needs.
+  solutions_by_rule = {
+    vmInsights     = ["VMInsights"]
+    changeTracking = ["ChangeTracking"]
+    defenderSql    = ["SQLAdvancedThreatProtection", "SQLVulnerabilityAssessment"]
+  }
+  solutions               = local.platform.log_analytics_workspace ? toset(flatten([for r in local.platform.data_collection_rules : local.solutions_by_rule[r]])) : toset([])
+  change_tracking_streams = ["Microsoft-ConfigurationChange", "Microsoft-ConfigurationChangeV2", "Microsoft-ConfigurationData"]
+  defender_sql_streams = [
+    "Microsoft-DefenderForSqlAlerts",
+    "Microsoft-DefenderForSqlLogins",
+    "Microsoft-DefenderForSqlTelemetry",
+    "Microsoft-DefenderForSqlScanEvents",
+    "Microsoft-DefenderForSqlScanResults",
+  ]
+}
+
+resource "azurerm_resource_group" "management" {
+  count    = local.deploy_management ? 1 : 0
+  provider = azurerm.management
+  name     = var.policy_values["management_resource_group_name"]
+  location = var.location
+}
+
+resource "azurerm_log_analytics_workspace" "this" {
+  count               = local.platform.log_analytics_workspace ? 1 : 0
+  provider            = azurerm.management
+  name                = local.names.workspace
+  location            = var.location
+  resource_group_name = azurerm_resource_group.management[0].name
+  sku                 = "PerGB2018"
+  retention_in_days   = var.log_analytics_retention_in_days
+}
+
+resource "azurerm_log_analytics_solution" "this" {
+  for_each              = local.solutions
+  provider              = azurerm.management
+  solution_name         = each.key
+  location              = var.location
+  resource_group_name   = azurerm_resource_group.management[0].name
+  workspace_resource_id = azurerm_log_analytics_workspace.this[0].id
+  workspace_name        = azurerm_log_analytics_workspace.this[0].name
+
+  plan {
+    publisher = "Microsoft"
+    product   = "OMSGallery/\${each.key}"
+  }
+}
+
+# The identity Azure Monitor Agent authenticates with. It needs no roles: the
+# data collection rule associations decide where its data goes.
+resource "azurerm_user_assigned_identity" "ama" {
+  count               = local.platform.user_assigned_identity ? 1 : 0
+  provider            = azurerm.management
+  name                = local.names.identity
+  location            = var.location
+  resource_group_name = azurerm_resource_group.management[0].name
+}
+
+resource "azurerm_monitor_data_collection_rule" "vm_insights" {
+  count               = contains(local.platform.data_collection_rules, "vmInsights") ? 1 : 0
+  provider            = azurerm.management
+  name                = local.names.vm_insights
+  location            = var.location
+  resource_group_name = azurerm_resource_group.management[0].name
+  description         = "VM Insights performance counters and dependency map, for ALZ's Deploy-VM-Monitoring policies."
+
+  data_sources {
+    performance_counter {
+      name                          = "VMInsightsPerfCounters"
+      streams                       = ["Microsoft-InsightsMetrics"]
+      sampling_frequency_in_seconds = 60
+      counter_specifiers            = ["\\\\VmInsights\\\\DetailedMetrics"]
+    }
+    extension {
+      name           = "DependencyAgentDataSource"
+      streams        = ["Microsoft-ServiceMap"]
+      extension_name = "DependencyAgent"
+      extension_json = jsonencode({})
+    }
+  }
+
+  destinations {
+    log_analytics {
+      name                  = "VMInsightsPerf-Logs-Dest"
+      workspace_resource_id = azurerm_log_analytics_workspace.this[0].id
+    }
+  }
+
+  data_flow {
+    streams      = ["Microsoft-InsightsMetrics"]
+    destinations = ["VMInsightsPerf-Logs-Dest"]
+  }
+
+  data_flow {
+    streams      = ["Microsoft-ServiceMap"]
+    destinations = ["VMInsightsPerf-Logs-Dest"]
+  }
+}
+
+resource "azurerm_monitor_data_collection_rule" "change_tracking" {
+  count               = contains(local.platform.data_collection_rules, "changeTracking") ? 1 : 0
+  provider            = azurerm.management
+  name                = local.names.change_tracking
+  location            = var.location
+  resource_group_name = azurerm_resource_group.management[0].name
+  description         = "Change Tracking and Inventory, for ALZ's Deploy-*-ChangeTrack policies."
+
+  data_sources {
+    extension {
+      name           = "CTDataSource-Windows"
+      streams        = local.change_tracking_streams
+      extension_name = "ChangeTracking-Windows"
+      extension_json = jsonencode(${hclJson(changeTrackingSettings('Windows'), '      ')})
+    }
+    extension {
+      name           = "CTDataSource-Linux"
+      streams        = local.change_tracking_streams
+      extension_name = "ChangeTracking-Linux"
+      extension_json = jsonencode(${hclJson(changeTrackingSettings('Linux'), '      ')})
+    }
+  }
+
+  destinations {
+    log_analytics {
+      name                  = "Microsoft-CT-Dest"
+      workspace_resource_id = azurerm_log_analytics_workspace.this[0].id
+    }
+  }
+
+  data_flow {
+    streams      = local.change_tracking_streams
+    destinations = ["Microsoft-CT-Dest"]
+  }
+
+  depends_on = [azurerm_log_analytics_solution.this]
+}
+
+resource "azurerm_monitor_data_collection_rule" "defender_sql" {
+  count               = contains(local.platform.data_collection_rules, "defenderSql") ? 1 : 0
+  provider            = azurerm.management
+  name                = local.names.defender_sql
+  location            = var.location
+  resource_group_name = azurerm_resource_group.management[0].name
+  description         = "Microsoft Defender for SQL on machines, for ALZ's Deploy-MDFC-DefSQL-AMA policy."
+
+  data_sources {
+    extension {
+      name           = "MicrosoftDefenderForSQL"
+      streams        = local.defender_sql_streams
+      extension_name = "MicrosoftDefenderForSQL"
+      extension_json = jsonencode({ enableCollectionOfSqlQueriesForSecurityResearch = false })
+    }
+  }
+
+  destinations {
+    log_analytics {
+      name                  = "LogAnalyticsDest"
+      workspace_resource_id = azurerm_log_analytics_workspace.this[0].id
+    }
+  }
+
+  data_flow {
+    streams      = local.defender_sql_streams
+    destinations = ["LogAnalyticsDest"]
+  }
+
+  depends_on = [azurerm_log_analytics_solution.this]
+}
+
+resource "azurerm_resource_group" "private_dns" {
+  count    = local.platform.private_dns_resource_group ? 1 : 0
+  provider = azurerm.connectivity
+  name     = var.policy_values["private_dns_zone_resource_group_name"]
+  location = var.location
+}
+
+locals {
+  # The created resources' IDs, for the policy parameters that point at them.
+  platform_values = {
+    for k, v in {
+      log_analytics_workspace_id                  = one(azurerm_log_analytics_workspace.this[*].id)
+      ama_user_assigned_managed_identity_id       = one(azurerm_user_assigned_identity.ama[*].id)
+      ama_user_assigned_managed_identity_name     = one(azurerm_user_assigned_identity.ama[*].name)
+      ama_vm_insights_data_collection_rule_id     = one(azurerm_monitor_data_collection_rule.vm_insights[*].id)
+      ama_change_tracking_data_collection_rule_id = one(azurerm_monitor_data_collection_rule.change_tracking[*].id)
+      ama_mdfc_sql_data_collection_rule_id        = one(azurerm_monitor_data_collection_rule.defender_sql[*].id)
+    } : k => v if v != null
+  }
+  policy_values = merge(var.policy_values, { location = var.location }, local.platform_values)
   assignments   = { for a in var.policy_assignments : "\${a.management_group_id}/\${a.name}" => a }
 }
 
@@ -799,11 +1568,59 @@ resource "azurerm_role_assignment" "policy" {
   principal_type     = "ServicePrincipal"
 }
 
+# Roles the identities need on the platform resource groups their parameters point at.
+locals {
+  platform_scopes = {
+    management = one(azurerm_resource_group.management[*].id)
+    privateDns = one(azurerm_resource_group.private_dns[*].id)
+  }
+  # Skips resources still at an ALZ placeholder ID.
+  platform_role_assignments = {
+    for g in var.platform_role_assignments : "\${g.management_group_id}/\${g.assignment}/\${g.scope}/\${g.role_definition_id}" => g
+    if contains(["management", "privateDns"], g.scope) || !strcontains(lookup(var.policy_values, g.scope, "00000000-0000-0000-0000-000000000000"), "00000000-0000-0000-0000-000000000000")
+  }
+}
+
+resource "azurerm_role_assignment" "platform" {
+  for_each           = local.platform_role_assignments
+  scope              = try(local.platform_scopes[each.value.scope], regex("^/subscriptions/[^/]+/resource[Gg]roups/[^/]+", var.policy_values[each.value.scope]))
+  role_definition_id = "/providers/Microsoft.Authorization/roleDefinitions/\${each.value.role_definition_id}"
+  principal_id       = azurerm_management_group_policy_assignment.this["\${each.value.management_group_id}/\${each.value.assignment}"].identity[0].principal_id
+  principal_type     = "ServicePrincipal"
+}
+
 output "management_group_ids" {
   description = "Resource IDs of the management groups, by name."
   value       = local.management_group_ids
 }
 `;
+}
+
+/** A JSON value as an HCL expression (for jsonencode). */
+function hclJson(value: unknown, indent = ''): string {
+  const next = indent + '  ';
+  if (Array.isArray(value)) return value.length ? `[\n${value.map((v) => `${next}${hclJson(v, next)},`).join('\n')}\n${indent}]` : '[]';
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).map(([k, v]) => [k, hclJson(v, next)] as const);
+    if (!entries.length) return '{}';
+    // As terraform fmt does: runs of single-line values are aligned; a multi-line value ends the run.
+    const lines: string[] = [];
+    let run: (readonly [string, string])[] = [];
+    const flush = () => {
+      const width = Math.max(0, ...run.map(([k]) => k.length));
+      for (const [k, v] of run) lines.push(`${next}${k.padEnd(width)} = ${v}`);
+      run = [];
+    };
+    for (const entry of entries) {
+      if (entry[1].includes('\n')) {
+        flush();
+        lines.push(`${next}${entry[0]} = ${entry[1]}`);
+      } else run.push(entry);
+    }
+    flush();
+    return `{\n${lines.join('\n')}\n${indent}}`;
+  }
+  return typeof value === 'string' ? tq(value) : String(value);
 }
 
 const jsonString = (value: unknown) => (value === undefined || value === null ? undefined : JSON.stringify(value));
@@ -839,6 +1656,18 @@ export function toTerraformDesign(model: IacModel): string {
         category: g.category,
         description: g.description,
       })),
+    })),
+    platform_resources: {
+      log_analytics_workspace: model.platform.logAnalyticsWorkspace,
+      user_assigned_identity: model.platform.userAssignedIdentity,
+      data_collection_rules: model.platform.dataCollectionRules,
+      private_dns_resource_group: model.platform.privateDnsResourceGroup,
+    },
+    platform_role_assignments: model.platformRoleAssignments.map((g) => ({
+      management_group_id: g.managementGroupId,
+      assignment: g.assignment,
+      role_definition_id: g.roleDefinitionId,
+      scope: g.scope,
     })),
     policy_assignments: model.assignments.map((a) => ({
       management_group_id: a.managementGroupId,
@@ -975,18 +1804,49 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 - **Permissions.** Creating management groups under the tenant root group, policy definitions and
   role assignments needs Owner (or Management Group Contributor plus Resource Policy Contributor and
   User Access Administrator) at the tenant root management group.
-- **Platform resources.** ALZ's DeployIfNotExists policies point at resources this export doesn't
-  create, such as the central Log Analytics workspace. Set their IDs in the values file first.${
-    unset.length
-      ? ` Still at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.`
-      : ''
+${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
+    unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
 - **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
-- **Cross-scope roles.** Some ALZ assignments remediate outside their own management group (for
-  example, private DNS records in the connectivity subscription). Grant their identities a role on
-  that scope as well, as the ALZ Terraform module does.
+- **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
+  their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
 `;
+}
+
+const RULE_LABEL: Record<DataCollectionRule, string> = {
+  vmInsights: 'VM Insights',
+  changeTracking: 'Change Tracking and Inventory',
+  defenderSql: 'Defender for SQL',
+};
+
+/** What the export creates for the policies to point at. */
+function platformSection(model: IacModel): string {
+  const { platform } = model;
+  const management = [
+    platform.logAnalyticsWorkspace && 'a Log Analytics workspace (with the solutions its data needs)',
+    platform.userAssignedIdentity && 'the user-assigned identity Azure Monitor Agent authenticates with',
+    platform.dataCollectionRules.length &&
+      `data collection rules for ${platform.dataCollectionRules.map((r) => RULE_LABEL[r]).join(', ')}`,
+  ].filter(Boolean);
+  const lines = [
+    management.length &&
+      `  - in the management subscription, a resource group with ${management.join(', ')}. The policies' parameters point at them;`,
+    platform.privateDnsResourceGroup &&
+      '  - in the private DNS zone subscription, the resource group for the private link DNS zones. Create the zones in it (or link existing ones): the policy adds records to them, it does not create them;',
+  ].filter(Boolean);
+  return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
+}
+
+function platformScopes(model: IacModel): string {
+  const scopes = [...new Set(model.platformRoleAssignments.map((g) => g.scope))].map((s) =>
+    s === 'management'
+      ? 'the management resource group'
+      : s === 'privateDns'
+        ? 'the private DNS zone resource group'
+        : `the resource group of \`${s}\``,
+  );
+  return scopes.length ? scopes.join(', ') : 'none in this design';
 }
 
 function notesSection(model: IacModel): string {
@@ -1093,7 +1953,12 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: `${env}.bicepparam`, content: toBicepParams(model, options), description: 'values for this environment' },
         { name: 'modules/policy-definitions.bicep', content: toBicepDefinitionsModule(), description: 'module' },
         { name: 'modules/policy-assignments.bicep', content: toBicepAssignmentsModule(), description: 'module' },
+        { name: 'modules/management-resources.bicep', content: toBicepManagementModule(), description: 'module' },
+        { name: 'modules/resource-group.bicep', content: toBicepResourceGroupModule(), description: 'module' },
+        { name: 'modules/role-assignment.bicep', content: toBicepRoleAssignmentModule(), description: 'module' },
         { name: 'lib/management-groups.json', content: json(model.managementGroups), description: 'design' },
+        { name: 'lib/platform-resources.json', content: json(model.platform), description: 'design' },
+        { name: 'lib/platform-role-assignments.json', content: json(model.platformRoleAssignments), description: 'design' },
         { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
         { name: 'lib/policy-set-definitions.json', content: json(model.policySetDefinitions), description: 'design' },
         { name: 'lib/policy-definitions.json', content: json(model.policyDefinitions), description: 'design' },

@@ -14,7 +14,8 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 
 - a generic template (`main.bicep` / `main.tf`) that creates the management groups, the custom policy definitions and initiatives, the assignments (with their enforcement modes, parameters and non-compliance messages) and the role assignments the remediation identities need;
 - the design as data (JSON), including the ALZ custom definitions it uses from the pinned ALZ library release;
-- a small values file per environment: the region and the resource IDs ALZ's DeployIfNotExists policies point at (Log Analytics workspace, data collection rules, DDoS plan, private DNS zones, security contact). The dialog flags any still at the ALZ placeholder.
+- the platform resources ALZ's DeployIfNotExists policies point at: in the management subscription, a resource group with the Log Analytics workspace, the data collection rules (VM Insights, Change Tracking, Defender for SQL) and the Azure Monitor Agent identity; in the connectivity subscription, the private DNS zone resource group. Remediation identities get their roles on those resource groups too;
+- a small values file per environment: the region, the subscriptions and resource group names, and the remaining existing resources (DDoS plan, security contact). The dialog flags any still empty or at the ALZ placeholder.
 
 Deploying needs tenant-level rights (Owner at the tenant root management group, or equivalent). See the README in each export.
 

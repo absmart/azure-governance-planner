@@ -10,6 +10,16 @@ import { crc32, createZip } from './zip';
 const catalog = catalogJson as unknown as Catalog;
 const library = JSON.parse(readFileSync(new URL('../../public/alz-library.json', import.meta.url), 'utf8')) as AlzLibrary;
 
+/** Inputs the templates fill from the platform resources they create. */
+const CREATED = new Set([
+  'log_analytics_workspace_id',
+  'ama_user_assigned_managed_identity_id',
+  'ama_user_assigned_managed_identity_name',
+  'ama_vm_insights_data_collection_rule_id',
+  'ama_change_tracking_data_collection_rule_id',
+  'ama_mdfc_sql_data_collection_rule_id',
+]);
+
 const model = (input: Partial<DesignInput> = {}) => buildIacModel(buildDesign(catalog, { ...DEFAULT_INPUT, ...input }), catalog, library);
 
 const everything: Partial<DesignInput> = {
@@ -82,10 +92,27 @@ describe('buildIacModel', () => {
         }
       });
 
-      it('maps every per-environment parameter to a declared input', () => {
+      it('maps every per-environment parameter to a declared input or a created platform resource', () => {
         const declared = new Set(m.inputs.map((i) => i.name));
-        for (const a of m.assignments) for (const input of Object.values(a.inputs)) expect(declared.has(input)).toBe(true);
+        for (const a of m.assignments)
+          for (const input of Object.values(a.inputs)) expect(declared.has(input) || CREATED.has(input), input).toBe(true);
         expect(declared.has('location')).toBe(true);
+        for (const created of CREATED) expect(declared.has(created)).toBe(false);
+      });
+
+      it('creates the platform resources the assignments point at, and grants their identities roles on them', () => {
+        const used = new Set(m.assignments.flatMap((a) => Object.values(a.inputs)));
+        expect(m.platform.logAnalyticsWorkspace).toBe(used.has('log_analytics_workspace_id') || m.platform.dataCollectionRules.length > 0);
+        expect(m.platform.userAssignedIdentity).toBe(used.has('ama_user_assigned_managed_identity_id'));
+        expect(m.platform.privateDnsResourceGroup).toBe(used.has('private_dns_zone_subscription_id'));
+        const byName = new Map(m.assignments.map((a) => [`${a.managementGroupId}/${a.name}`, a]));
+        for (const g of m.platformRoleAssignments) {
+          const a = byName.get(`${g.managementGroupId}/${g.assignment}`)!;
+          expect(a.identity).toBe(true);
+          expect(a.roleDefinitionIds).toContain(g.roleDefinitionId);
+        }
+        if (m.platform.logAnalyticsWorkspace) expect(m.platformRoleAssignments.some((g) => g.scope === 'management')).toBe(true);
+        if (m.platform.privateDnsResourceGroup) expect(m.platformRoleAssignments.some((g) => g.scope === 'privateDns')).toBe(true);
       });
 
       it('keeps assignment names within the 24-character management group limit', () => {
@@ -93,6 +120,12 @@ describe('buildIacModel', () => {
       });
     });
   }
+
+  it('creates no management resources when monitoring and Defender are off', () => {
+    const m = model({ monitoring: false, defender: false });
+    expect(m.platform).toMatchObject({ logAnalyticsWorkspace: false, userAssignedIdentity: false, dataCollectionRules: [] });
+    expect(m.inputs.map((i) => i.name)).not.toContain('management_subscription_id');
+  });
 
   it('builds private DNS zone IDs from the DNS subscription, resource group and region', () => {
     const dns = model().assignments.find((a) => a.name === 'Deploy-Private-DNS-Zones')!;
@@ -121,13 +154,13 @@ describe('buildIacModel', () => {
   it('reports inputs still at their placeholder', () => {
     const m = model();
     const unset = unsetInputs(m, { environment: 'prod', values: {} }).map((i) => i.name);
-    expect(unset).toContain('log_analytics_workspace_id');
+    expect(unset).toContain('management_subscription_id');
     expect(unset).not.toContain('location');
-    const filled = unsetInputs(m, {
-      environment: 'prod',
-      values: { log_analytics_workspace_id: '/subscriptions/1/resourceGroups/rg/providers/Microsoft.OperationalInsights/workspaces/law' },
-    }).map((i) => i.name);
-    expect(filled).not.toContain('log_analytics_workspace_id');
+    expect(unset).not.toContain('management_resource_group_name');
+    const filled = unsetInputs(m, { environment: 'prod', values: { management_subscription_id: '11111111-2222-3333-4444-555555555555' } }).map(
+      (i) => i.name,
+    );
+    expect(filled).not.toContain('management_subscription_id');
   });
 });
 

@@ -22,6 +22,8 @@ export interface PolicyInfo {
   pv?: true;
   /** Deprecated. */
   dp?: true;
+  /** A built-in Azure Government doesn't have (per AzAdvertizer). */
+  ng?: true;
 }
 
 export interface FrameworkRef {
@@ -31,6 +33,8 @@ export interface FrameworkRef {
   e: string;
   /** Controls the policy is mapped to. */
   g: string[];
+  /** policyDefinitionReferenceId in the initiative. */
+  r?: string;
 }
 
 export interface Framework {
@@ -55,6 +59,8 @@ export interface Framework {
 export interface Member {
   p: string;
   e: string;
+  /** policyDefinitionReferenceIds it is included under, for exemptions. */
+  r?: string[];
 }
 
 export interface ExtraInitiative {
@@ -62,6 +68,7 @@ export interface ExtraInitiative {
   name: string;
   description: string;
   version: string;
+  usGov?: boolean;
   policies: Member[];
 }
 
@@ -76,6 +83,8 @@ export interface AlzAssignment {
   effect?: string;
   identity: boolean;
   policies: Member[];
+  /** False when its built-in definition isn't in Azure Government. */
+  usGov?: false;
 }
 
 export interface AlzManagementGroup {

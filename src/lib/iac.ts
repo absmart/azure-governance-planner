@@ -13,7 +13,8 @@
 // All three formats come from the same model, so they always deploy the same design.
 
 import type { Catalog } from './catalog';
-import type { Design, PlannedAssignment } from './engine';
+import { govZoneName } from './cloud';
+import type { Design, PlannedAssignment, ScopeRef } from './engine';
 import { resourceName } from './naming';
 import { privateDnsZones } from './privateDns';
 
@@ -109,6 +110,27 @@ export interface IacAssignment {
   nonComplianceMessages: NonComplianceMessage[];
   /** Roles the assignment's identity gets at its management group, so remediation can deploy and modify. */
   roleDefinitionIds: string[];
+  /** Resource IDs the assignment doesn't apply to. */
+  notScopes: string[];
+}
+
+/** A policy exemption, at a management group, subscription or resource group. */
+export interface IacExemption {
+  name: string;
+  displayName: string;
+  description: string;
+  /** The exempted assignment: its management group and name. */
+  managementGroupId: string;
+  assignment: string;
+  scope:
+    | { kind: 'managementGroup'; managementGroupId: string }
+    | { kind: 'subscription'; subscriptionId: string }
+    | { kind: 'resourceGroup'; subscriptionId: string; resourceGroupName: string };
+  /** policyDefinitionReferenceIds; empty for the whole assignment. */
+  policyDefinitionReferenceIds: string[];
+  category: 'Waiver' | 'Mitigated';
+  /** ISO date-time, or null. */
+  expiresOn: string | null;
 }
 
 export type DataCollectionRule = 'vmInsights' | 'changeTracking' | 'defenderSql';
@@ -154,6 +176,9 @@ export interface IacModel {
   assignments: IacAssignment[];
   platform: PlatformResources;
   platformRoleAssignments: PlatformRoleAssignment[];
+  /** "public" or "usgovernment" (the Terraform provider's environment). */
+  cloud: 'public' | 'usgovernment';
+  exemptions: IacExemption[];
   /** Platform subscriptions to place in their management groups (when the export option is on). */
   subscriptionPlacements: SubscriptionPlacement[];
   inputs: IacInput[];
@@ -248,6 +273,14 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
   const atRoot = (id: string) =>
     id.replace(MG_SCOPED_DEFINITION, `/providers/Microsoft.Management/managementGroups/${root.id}/providers/Microsoft.Authorization/`);
 
+  const mgIdOf = (role: string) => design.mgs.find((m) => m.role === role)?.id ?? role;
+  const scopeId = (scope: ScopeRef): string =>
+    scope.kind === 'managementGroup'
+      ? `/providers/Microsoft.Management/managementGroups/${mgIdOf(scope.role)}`
+      : scope.kind === 'subscription'
+        ? `/subscriptions/${subscriptionGuid(scope.id)}`
+        : scope.id.trim();
+
   const managementGroups: IacManagementGroup[] = design.mgs.map((m) => ({
     id: m.id,
     displayName: m.displayName,
@@ -264,6 +297,8 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     if (!def) return void missing.add(name);
     definitions.set(name, clone(def));
   };
+  const gov = design.input.cloud === 'AzureUSGovernment';
+  let govDropped = 0;
   const useSet = (name: string) => {
     if (sets.has(name)) return;
     const set = library.policySetDefinitions[name];
@@ -273,6 +308,13 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
       if (!MG_SCOPED_DEFINITION.test(ref.policyDefinitionId)) continue;
       ref.policyDefinitionId = atRoot(ref.policyDefinitionId);
       useDefinition(lastSegment(ref.policyDefinitionId));
+    }
+    if (gov) {
+      const refs = copy.properties.policyDefinitions ?? [];
+      copy.properties.policyDefinitions = refs.filter(
+        (ref) => MG_SCOPED_DEFINITION.test(ref.policyDefinitionId) || !catalog.policies[lastSegment(ref.policyDefinitionId)]?.ng,
+      );
+      govDropped += refs.length - copy.properties.policyDefinitions.length;
     }
     sets.set(name, copy);
   };
@@ -328,8 +370,28 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
             droppedPlaceholders++;
           }
         }
+        // Azure Government zone names for ALZ's private DNS policy.
+        const dnsZoneNames = library.policySetDefinitions[lastSegment(policyDefinitionId)]?.properties.parameters?.dnsZoneNames as
+          | { defaultValue?: Record<string, string> }
+          | undefined;
+        if (gov && dnsZoneNames?.defaultValue)
+          parameters.dnsZoneNames = {
+            value: Object.fromEntries(Object.entries(dnsZoneNames.defaultValue).map(([k, z]) => [k, govZoneName(z)])),
+          };
+        // Parameter overrides replace the library value or input.
+        for (const [p, value] of Object.entries(a.parameters ?? {})) {
+          delete inputs[p];
+          parameters[p] = { value };
+        }
       } else if (a.parameters) {
         parameters = Object.fromEntries(Object.entries(a.parameters).map(([k, value]) => [k, { value }]));
+      }
+
+      // Messages for policies an Azure Government export left out of the initiative would fail validation.
+      const setRefs = sets.get(lastSegment(policyDefinitionId))?.properties.policyDefinitions;
+      if (gov && setRefs) {
+        const kept = new Set(setRefs.map((r) => r.policyDefinitionReferenceId));
+        nonComplianceMessages = nonComplianceMessages.filter((m) => !m.policyDefinitionReferenceId || kept.has(m.policyDefinitionReferenceId));
       }
 
       assignments.push({
@@ -345,10 +407,15 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
         inputs,
         nonComplianceMessages,
         roleDefinitionIds: a.identity ? rolesFor(a, catalog, library) : [],
+        notScopes: (a.notScopes ?? []).map(scopeId),
       });
       if (a.identity) useInput('location', a.name);
     }
   }
+  if (govDropped)
+    notes.push(
+      `Azure Government: ${govDropped} references to built-in policies it doesn't have were left out of the ALZ initiatives (availability from AzAdvertizer).`,
+    );
   if (missing.size) notes.push(`Not found in ALZ library ${library.ref}: ${[...missing].join(', ')}.`);
   if (droppedPlaceholders)
     notes.push(
@@ -369,7 +436,41 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     else if (created) platform[created.creates as 'logAnalyticsWorkspace' | 'userAssignedIdentity'] = true;
     if (PRIVATE_DNS_INPUTS.has(name)) platform.privateDnsResourceGroup = true;
   }
-  if (platform.privateDnsResourceGroup) platform.privateDnsZones = privateDnsZones(design.input.privateDnsZones ?? [], '{regionName}');
+  if (platform.privateDnsResourceGroup)
+    platform.privateDnsZones = [
+      ...new Set(privateDnsZones(design.input.privateDnsZones ?? [], '{regionName}').map((z) => (gov ? govZoneName(z) : z))),
+    ];
+
+  // Exemptions.
+  const exemptions: IacExemption[] = [];
+  for (const mg of design.mgs)
+    for (const a of mg.assignments)
+      a.exemptions.forEach((e, i) => {
+        const refs = e.policies.length
+          ? [...new Set(a.policies.filter((m) => e.policies.includes(m.p)).flatMap((m) => m.r ?? [m.p]))]
+          : [];
+        const scope: IacExemption['scope'] =
+          e.scope.kind === 'managementGroup'
+            ? { kind: 'managementGroup', managementGroupId: mgIdOf(e.scope.role) }
+            : e.scope.kind === 'subscription'
+              ? { kind: 'subscription', subscriptionId: subscriptionGuid(e.scope.id) }
+              : {
+                  kind: 'resourceGroup',
+                  subscriptionId: /\/subscriptions\/([^/]+)/i.exec(e.scope.id)?.[1] ?? '',
+                  resourceGroupName: /\/resourceGroups\/([^/]+)/i.exec(e.scope.id)?.[1] ?? '',
+                };
+        exemptions.push({
+          name: `${a.name}-exempt-${String(i + 1).padStart(2, '0')}`.slice(0, 64),
+          displayName: `Exempt ${a.name}${refs.length ? ` (${refs.length} polic${refs.length === 1 ? 'y' : 'ies'})` : ''}`,
+          description: e.reason,
+          managementGroupId: mg.id,
+          assignment: a.name,
+          scope,
+          policyDefinitionReferenceIds: a.kind === 'initiative' ? refs : [],
+          category: e.category,
+          expiresOn: e.expiresOn ? `${e.expiresOn}T00:00:00Z` : null,
+        });
+      });
   // Data collection rules send to the workspace.
   if (platform.dataCollectionRules.length) platform.logAnalyticsWorkspace = true;
   platform.dataCollectionRules.sort();
@@ -453,11 +554,18 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     assignments,
     platform,
     platformRoleAssignments,
+    cloud: gov ? 'usgovernment' : 'public',
+    exemptions,
     subscriptionPlacements,
     inputs,
     aliases,
     notes,
   };
+}
+
+/** "11111111-..." from a subscription GUID or "/subscriptions/<guid>[/...]". */
+function subscriptionGuid(id: string): string {
+  return /\/subscriptions\/([^/]+)/i.exec(id)?.[1] ?? id.trim();
 }
 
 /** The design's custom initiative of framework policies set to Deny. */
@@ -599,6 +707,9 @@ param policySetDefinitions array = []
 
 @description('Policy assignments, each with the managementGroupId it is assigned at.')
 param policyAssignments array = []
+
+@description('Policy exemptions: { name, managementGroupId, assignment, scope: { kind, ... }, policyDefinitionReferenceIds, category, expiresOn }.')
+param policyExemptions array = []
 
 @description('Platform resources to create for the policies to point at: { logAnalyticsWorkspace, userAssignedIdentity, dataCollectionRules, privateDnsResourceGroup }.')
 param platformResources object = {}
@@ -769,6 +880,46 @@ resource subscriptionPlacement 'Microsoft.Management/managementGroups/subscripti
   }
 ]
 
+// Exemptions, at their scope. They point at the assignments by ID, after those exist.
+var exemptionsAt = {
+  managementGroup: filter(policyExemptions, e => e.scope.kind == 'managementGroup')
+  subscription: filter(policyExemptions, e => e.scope.kind == 'subscription')
+  resourceGroup: filter(policyExemptions, e => e.scope.kind == 'resourceGroup')
+}
+
+module managementGroupExemptions 'modules/policy-exemption-mg.bicep' = [
+  for e in exemptionsAt.managementGroup: {
+    name: take('exemption-\${uniqueString(e.scope.managementGroupId, e.name)}', 64)
+    scope: managementGroup(e.scope.managementGroupId)
+    params: {
+      exemption: e
+    }
+    dependsOn: [assignments]
+  }
+]
+
+module subscriptionExemptions 'modules/policy-exemption-subscription.bicep' = [
+  for e in exemptionsAt.subscription: {
+    name: take('exemption-\${uniqueString(e.scope.subscriptionId, e.name)}', 64)
+    scope: subscription(e.scope.subscriptionId)
+    params: {
+      exemption: e
+    }
+    dependsOn: [assignments]
+  }
+]
+
+module resourceGroupExemptions 'modules/policy-exemption-rg.bicep' = [
+  for e in exemptionsAt.resourceGroup: {
+    name: take('exemption-\${uniqueString(e.scope.subscriptionId, e.scope.resourceGroupName, e.name)}', 64)
+    scope: resourceGroup(e.scope.subscriptionId, e.scope.resourceGroupName)
+    params: {
+      exemption: e
+    }
+    dependsOn: [assignments]
+  }
+]
+
 output managementGroupIds array = [for (mg, i) in managementGroups: mgs[i].id]
 `;
 }
@@ -803,6 +954,32 @@ resource zone 'Microsoft.Network/privateDnsZones@2024-06-01' = [
     location: 'global'
   }
 ]
+`;
+}
+
+/** A policy exemption module for one scope type. */
+export function toBicepExemptionModule(scope: 'managementGroup' | 'subscription' | 'resourceGroup'): string {
+  return `${commentBlock('//', [`A policy exemption at ${scope === 'managementGroup' ? 'a management group' : scope === 'subscription' ? 'a subscription' : 'a resource group'}.`, GENERATOR])}
+targetScope = '${scope}'
+
+@description('{ name, displayName, description, managementGroupId, assignment, policyDefinitionReferenceIds, category, expiresOn }')
+param exemption object
+
+resource policyExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = {
+  name: exemption.name
+  properties: {
+    policyAssignmentId: extensionResourceId(
+      tenantResourceId('Microsoft.Management/managementGroups', exemption.managementGroupId),
+      'Microsoft.Authorization/policyAssignments',
+      exemption.assignment
+    )
+    policyDefinitionReferenceIds: exemption.policyDefinitionReferenceIds
+    exemptionCategory: exemption.category
+    displayName: exemption.displayName
+    description: exemption.description
+    expiresOn: exemption.?expiresOn
+  }
+}
 `;
 }
 
@@ -1136,6 +1313,7 @@ resource assignments 'Microsoft.Authorization/policyAssignments@2025-01-01' = [
       // Fixed values, plus the parameters that take a per-environment value.
       parameters: union(a.parameters, toObject(items(a.inputs), p => p.key, p => { value: policyValues[p.value] }))
       nonComplianceMessages: a.nonComplianceMessages
+      notScopes: a.?notScopes ?? []
     }
   }
 ]
@@ -1195,6 +1373,7 @@ param policyDefinitions = loadJsonContent('lib/policy-definitions.json')
 param policySetDefinitions = loadJsonContent('lib/policy-set-definitions.json')
 param policyAssignments = loadJsonContent('lib/policy-assignments.json')
 param platformResources = loadJsonContent('lib/platform-resources.json')
+param policyExemptions = loadJsonContent('lib/policy-exemptions.json')
 param platformRoleAssignments = loadJsonContent('lib/platform-role-assignments.json')
 param subscriptionPlacements = loadJsonContent('lib/subscription-placements.json')
 `;
@@ -1227,6 +1406,7 @@ export function toTerraform(options: { terragrunt?: boolean } = {}): string {
     : `
 # The subscription comes from ARM_SUBSCRIPTION_ID (or az account show).
 provider "azurerm" {
+  environment = var.cloud_environment
   features {}
 }
 `;
@@ -1245,14 +1425,22 @@ ${provider}
 # (policy_values management_subscription_id / private_dns_zone_subscription_id).
 provider "azurerm" {
   alias           = "management"
+  environment     = var.cloud_environment
   subscription_id = lookup(var.policy_values, "management_subscription_id", "") != "" ? var.policy_values["management_subscription_id"] : null
   features {}
 }
 
 provider "azurerm" {
   alias           = "connectivity"
+  environment     = var.cloud_environment
   subscription_id = lookup(var.policy_values, "private_dns_zone_subscription_id", "") != "" ? var.policy_values["private_dns_zone_subscription_id"] : null
   features {}
+}
+
+variable "cloud_environment" {
+  description = "Azure cloud: public or usgovernment."
+  type        = string
+  default     = "public"
 }
 
 variable "location" {
@@ -1336,6 +1524,26 @@ variable "policy_assignments" {
       policy_definition_reference_id = optional(string)
     })), [])
     role_definition_ids = optional(list(string), [])
+    not_scopes          = optional(list(string), [])
+  }))
+  default = []
+}
+
+variable "policy_exemptions" {
+  description = "Policy exemptions. scope_kind: managementGroup, subscription or resourceGroup."
+  type = list(object({
+    name                            = string
+    display_name                    = string
+    description                     = optional(string)
+    management_group_id             = string
+    assignment                      = string
+    scope_kind                      = string
+    scope_management_group_id       = optional(string)
+    scope_subscription_id           = optional(string)
+    scope_resource_group_name       = optional(string)
+    policy_definition_reference_ids = optional(list(string), [])
+    category                        = string
+    expires_on                      = optional(string)
   }))
   default = []
 }
@@ -1690,6 +1898,7 @@ resource "azurerm_management_group_policy_assignment" "this" {
   display_name         = each.value.display_name
   description          = each.value.description
   enforce              = each.value.enforce
+  not_scopes           = each.value.not_scopes
   location             = var.location
   # Fixed values, plus the parameters that take a per-environment value.
   parameters = jsonencode(merge(
@@ -1757,6 +1966,50 @@ resource "azurerm_management_group_subscription_association" "platform" {
   }
   management_group_id = local.management_group_ids[each.value.management_group_id]
   subscription_id     = "/subscriptions/\${var.policy_values[each.value.input]}"
+}
+
+# Exemptions, at their scope.
+locals {
+  exemptions = { for e in var.policy_exemptions : "\${e.scope_kind}/\${coalesce(e.scope_management_group_id, e.scope_subscription_id, "-")}/\${coalesce(e.scope_resource_group_name, "-")}/\${e.name}" => e }
+  exemption_assignment_id = {
+    for k, e in local.exemptions : k => azurerm_management_group_policy_assignment.this["\${e.management_group_id}/\${e.assignment}"].id
+  }
+}
+
+resource "azurerm_management_group_policy_exemption" "this" {
+  for_each                        = { for k, e in local.exemptions : k => e if e.scope_kind == "managementGroup" }
+  name                            = each.value.name
+  display_name                    = each.value.display_name
+  description                     = each.value.description
+  management_group_id             = local.management_group_ids[each.value.scope_management_group_id]
+  policy_assignment_id            = local.exemption_assignment_id[each.key]
+  policy_definition_reference_ids = each.value.policy_definition_reference_ids
+  exemption_category              = each.value.category
+  expires_on                      = each.value.expires_on
+}
+
+resource "azurerm_subscription_policy_exemption" "this" {
+  for_each                        = { for k, e in local.exemptions : k => e if e.scope_kind == "subscription" }
+  name                            = each.value.name
+  display_name                    = each.value.display_name
+  description                     = each.value.description
+  subscription_id                 = "/subscriptions/\${each.value.scope_subscription_id}"
+  policy_assignment_id            = local.exemption_assignment_id[each.key]
+  policy_definition_reference_ids = each.value.policy_definition_reference_ids
+  exemption_category              = each.value.category
+  expires_on                      = each.value.expires_on
+}
+
+resource "azurerm_resource_group_policy_exemption" "this" {
+  for_each                        = { for k, e in local.exemptions : k => e if e.scope_kind == "resourceGroup" }
+  name                            = each.value.name
+  display_name                    = each.value.display_name
+  description                     = each.value.description
+  resource_group_id               = "/subscriptions/\${each.value.scope_subscription_id}/resourceGroups/\${each.value.scope_resource_group_name}"
+  policy_assignment_id            = local.exemption_assignment_id[each.key]
+  policy_definition_reference_ids = each.value.policy_definition_reference_ids
+  exemption_category              = each.value.category
+  expires_on                      = each.value.expires_on
 }
 
 output "management_group_ids" {
@@ -1857,7 +2110,23 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
         policy_definition_reference_id: m.policyDefinitionReferenceId,
       })),
       role_definition_ids: a.roleDefinitionIds,
+      not_scopes: a.notScopes,
     })),
+    policy_exemptions: model.exemptions.map((e) => ({
+      name: e.name,
+      display_name: e.displayName,
+      description: e.description || undefined,
+      management_group_id: e.managementGroupId,
+      assignment: e.assignment,
+      scope_kind: e.scope.kind,
+      scope_management_group_id: e.scope.kind === 'managementGroup' ? e.scope.managementGroupId : undefined,
+      scope_subscription_id: e.scope.kind !== 'managementGroup' ? e.scope.subscriptionId : undefined,
+      scope_resource_group_name: e.scope.kind === 'resourceGroup' ? e.scope.resourceGroupName : undefined,
+      policy_definition_reference_ids: e.policyDefinitionReferenceIds,
+      category: e.category,
+      expires_on: e.expiresOn ?? undefined,
+    })),
+    cloud_environment: model.cloud,
   });
 }
 
@@ -1945,6 +2214,7 @@ generate "provider" {
   if_exists = "overwrite_terragrunt"
   contents  = <<EOF
 provider "azurerm" {
+  environment = var.cloud_environment
   features {}
 }
 EOF
@@ -2068,7 +2338,7 @@ lib/                              the design as data
 ## Deploy
 
 \`\`\`sh
-az login
+${model.cloud === 'usgovernment' ? 'az cloud set --name AzureUSGovernment\n' : ''}az login
 az deployment tenant what-if --location <region> --parameters ${env}.bicepparam
 az deployment tenant create --name governance-${env} --location <region> --parameters ${env}.bicepparam
 \`\`\`
@@ -2091,7 +2361,7 @@ ${`${env}.tfvars`.padEnd(26)}this environment's values
 ## Deploy
 
 \`\`\`sh
-az login
+${model.cloud === 'usgovernment' ? 'az cloud set --name AzureUSGovernment\n' : ''}az login
 export ARM_SUBSCRIPTION_ID=<any subscription in the tenant>
 terraform init
 terraform plan -var-file=${env}.tfvars
@@ -2118,7 +2388,7 @@ ${live}/
 ## Deploy
 
 \`\`\`sh
-az login
+${model.cloud === 'usgovernment' ? 'az cloud set --name AzureUSGovernment\n' : ''}az login
 export ARM_SUBSCRIPTION_ID=<subscription id>
 export TG_STATE_RESOURCE_GROUP=<state resource group>
 export TG_STATE_STORAGE_ACCOUNT=<state storage account>
@@ -2155,11 +2425,15 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'modules/resource-group.bicep', content: toBicepResourceGroupModule(), description: 'module' },
         { name: 'modules/private-dns-zones.bicep', content: toBicepPrivateDnsZonesModule(), description: 'module' },
         { name: 'modules/role-assignment.bicep', content: toBicepRoleAssignmentModule(), description: 'module' },
+        { name: 'modules/policy-exemption-mg.bicep', content: toBicepExemptionModule('managementGroup'), description: 'module' },
+        { name: 'modules/policy-exemption-subscription.bicep', content: toBicepExemptionModule('subscription'), description: 'module' },
+        { name: 'modules/policy-exemption-rg.bicep', content: toBicepExemptionModule('resourceGroup'), description: 'module' },
         { name: 'lib/management-groups.json', content: json(model.managementGroups), description: 'design' },
         { name: 'lib/platform-resources.json', content: json(platformFor(model, options)), description: 'design' },
         { name: 'lib/platform-role-assignments.json', content: json(model.platformRoleAssignments), description: 'design' },
         { name: 'lib/subscription-placements.json', content: json(placementsFor(model, options)), description: 'design' },
         { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
+        { name: 'lib/policy-exemptions.json', content: json(model.exemptions), description: 'design' },
         { name: 'lib/policy-set-definitions.json', content: json(model.policySetDefinitions), description: 'design' },
         { name: 'lib/policy-definitions.json', content: json(model.policyDefinitions), description: 'design' },
         { name: 'README.md', content: bicepReadme(model, options), description: 'how to deploy' },

@@ -998,3 +998,87 @@ details.inputs summary {
   color: var(--text);
   font-size: 13px;
 }
+
+/* Override and exemption editors */
+
+.editor {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.editor h4 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.editor label.field {
+  display: grid;
+  gap: 2px;
+}
+
+.editor textarea {
+  width: 100%;
+  font: 12px/1.4 'Cascadia Code', Consolas, monospace;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  resize: vertical;
+}
+
+.editor label.check {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.editor .wide,
+.editor .scope-id {
+  width: 100%;
+}
+
+.editor .scope-id {
+  flex: 1 1 320px;
+}
+
+.error-text {
+  color: var(--error);
+  font-size: 12px;
+  margin: 0;
+}
+
+ul.exemptions {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+}
+
+details.exempt-policies summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.policy-picks {
+  display: grid;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+p.removed {
+  font-size: 12px;
+}
+
+.removed-item {
+  margin-right: 10px;
+}

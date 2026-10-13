@@ -28,6 +28,40 @@ const everything: Partial<DesignInput> = {
   cmk: true,
   sovereignty: true,
   local: true,
+  overrides: {
+    'landingzones/Deny-MgmtPorts-Internet': { notScopes: [{ kind: 'managementGroup', role: 'online' }] },
+    'landingzones/Deny-IP-forwarding': { enforcementMode: 'DoNotEnforce' },
+  },
+  exemptions: [
+    {
+      id: 'a',
+      mg: 'root',
+      assignment: 'Deploy-MDFC-Config-H224',
+      scope: { kind: 'managementGroup', role: 'sandbox' },
+      policies: ['44433aa3-7ec2-4002-93ea-65c65ff0310a'],
+      category: 'Waiver',
+      reason: 'Sandbox',
+      expiresOn: '2027-01-31',
+    },
+    {
+      id: 'b',
+      mg: 'landingzones',
+      assignment: 'Deny-IP-forwarding',
+      scope: { kind: 'subscription', id: '11111111-2222-3333-4444-555555555555' },
+      policies: [],
+      category: 'Mitigated',
+      reason: 'NVA',
+    },
+    {
+      id: 'c',
+      mg: 'landingzones',
+      assignment: 'Deny-IP-forwarding',
+      scope: { kind: 'resourceGroup', id: '/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-nva' },
+      policies: [],
+      category: 'Mitigated',
+      reason: 'NVA',
+    },
+  ],
 };
 
 describe('buildIacModel', () => {
@@ -228,6 +262,114 @@ describe('buildIacModel', () => {
       (i) => i.name,
     );
     expect(filled).not.toContain('management_subscription_id');
+  });
+});
+
+describe('Azure Government export', () => {
+  const m = model({ cloud: 'AzureUSGovernment', allowedLocations: ['usgovvirginia'] });
+
+  it('targets the usgovernment cloud and uses Government private DNS zone names', () => {
+    expect(m.cloud).toBe('usgovernment');
+    expect(m.platform.privateDnsZones).toContain('privatelink.blob.core.usgovcloudapi.net');
+    expect(m.platform.privateDnsZones).toContain('privatelink.vaultcore.usgovcloudapi.net');
+    expect(m.platform.privateDnsZones).toContain('privatelink.database.usgovcloudapi.net');
+    expect(m.platform.privateDnsZones.some((z) => /\.windows\.net$|\.azure\.com$|\.azure\.net$/.test(z))).toBe(false);
+    const dns = m.assignments.find((a) => a.name === 'Deploy-Private-DNS-Zones')!;
+    const names = dns.parameters.dnsZoneNames.value as Record<string, string>;
+    expect(names.azureStorageBlobPrivateDnsZoneId).toBe('privatelink.blob.core.usgovcloudapi.net');
+    expect(names.azureKeyVaultPrivateDnsZoneId).toBe('privatelink.vaultcore.usgovcloudapi.net');
+    const files = generateIacFiles('terraform', m, { environment: 'prd', values: {} });
+    expect(JSON.parse(files.find((f) => f.name === 'design.auto.tfvars.json')!.content).cloud_environment).toBe('usgovernment');
+  });
+
+  it('leaves Government-missing built-ins out of the ALZ initiatives', () => {
+    for (const set of m.policySetDefinitions)
+      for (const ref of set.properties.policyDefinitions ?? []) {
+        const id = ref.policyDefinitionId.split('/').pop()!;
+        if (ref.policyDefinitionId.startsWith('/providers/Microsoft.Authorization/')) expect(catalog.policies[id]?.ng, `${set.name} ${id}`).toBeFalsy();
+      }
+    expect(m.notes.some((n) => n.startsWith('Azure Government:'))).toBe(true);
+  });
+
+  it('creates no empty initiatives, and no messages for left-out policies', () => {
+    for (const set of m.policySetDefinitions) expect(set.properties.policyDefinitions!.length, set.name).toBeGreaterThan(0);
+    for (const a of m.assignments) {
+      const set = m.policySetDefinitions.find((x) => a.policyDefinitionId.endsWith(`/${x.name}`));
+      if (!set) continue;
+      const refs = new Set(set.properties.policyDefinitions!.map((r) => r.policyDefinitionReferenceId));
+      for (const msg of a.nonComplianceMessages) if (msg.policyDefinitionReferenceId) expect(refs.has(msg.policyDefinitionReferenceId), a.name).toBe(true);
+    }
+  });
+
+  it('names resources with Government region codes', () => {
+    const rg = m.inputs.find((i) => i.name === 'management_resource_group_name')!;
+    expect(inputValue(rg, m, { environment: 'prd', values: {} })).toBe('management-prd-usgv-01-rg');
+  });
+});
+
+describe('overrides and exemptions in the export', () => {
+  const sub = '11111111-2222-3333-4444-555555555555';
+  const m = model({
+    overrides: {
+      'landingzones/Deny-MgmtPorts-Internet': {
+        notScopes: [
+          { kind: 'managementGroup', role: 'online' },
+          { kind: 'subscription', id: sub },
+        ],
+      },
+      'root/Deploy-AzActivity-Log': { parameters: { logAnalytics: '/subscriptions/x/resourceGroups/y/providers/Microsoft.OperationalInsights/workspaces/z' } },
+    },
+    exemptions: [
+      {
+        id: 'a',
+        mg: 'root',
+        assignment: 'Deploy-MDFC-Config-H224',
+        scope: { kind: 'managementGroup', role: 'sandbox' },
+        policies: ['44433aa3-7ec2-4002-93ea-65c65ff0310a'],
+        category: 'Waiver',
+        reason: 'Sandbox has no open-source databases',
+        expiresOn: '2027-01-31',
+      },
+      {
+        id: 'b',
+        mg: 'landingzones',
+        assignment: 'Deny-IP-forwarding',
+        scope: { kind: 'resourceGroup', id: `/subscriptions/${sub}/resourceGroups/rg-nva` },
+        policies: [],
+        category: 'Mitigated',
+        reason: 'NVA subnet',
+      },
+    ],
+  });
+
+  it('resolves excluded scopes to resource IDs', () => {
+    const a = m.assignments.find((x) => x.name === 'Deny-MgmtPorts-Internet' && x.managementGroupId === 'contoso-landingzones')!;
+    expect(a.notScopes).toEqual(['/providers/Microsoft.Management/managementGroups/contoso-online', `/subscriptions/${sub}`]);
+  });
+
+  it('lets parameter overrides replace ALZ inputs', () => {
+    const a = m.assignments.find((x) => x.name === 'Deploy-AzActivity-Log')!;
+    expect(a.inputs.logAnalytics).toBeUndefined();
+    expect(a.parameters.logAnalytics.value).toContain('/workspaces/z');
+  });
+
+  it('exports exemptions with reference IDs, scope and expiry', () => {
+    expect(m.exemptions).toEqual([
+      expect.objectContaining({
+        managementGroupId: 'contoso',
+        assignment: 'Deploy-MDFC-Config-H224',
+        scope: { kind: 'managementGroup', managementGroupId: 'contoso-sandbox' },
+        policyDefinitionReferenceIds: ['defenderForOssDb'],
+        category: 'Waiver',
+        expiresOn: '2027-01-31T00:00:00Z',
+      }),
+      expect.objectContaining({
+        assignment: 'Deny-IP-forwarding',
+        scope: { kind: 'resourceGroup', subscriptionId: sub, resourceGroupName: 'rg-nva' },
+        policyDefinitionReferenceIds: [],
+        expiresOn: null,
+      }),
+    ]);
   });
 });
 

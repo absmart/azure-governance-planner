@@ -1,13 +1,16 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import type { Catalog } from '../lib/catalog';
 import {
   ENFORCING_EFFECTS,
   effectiveAssignments,
+  overrideKey,
   type Design,
+  type DesignInput,
   type MgRole,
   type PlannedAssignment,
   type PlannedMg,
 } from '../lib/engine';
+import { ExemptionsEditor, OverrideEditor } from './AssignmentEditor';
 import { EffectSummary, ModeBadge, OriginBadge, PolicyLink, definitionUrl } from './common';
 
 const POLICY_PREVIEW = 40;
@@ -45,7 +48,18 @@ function Tree(props: { design: Design; selected: MgRole; onSelect: (role: MgRole
   );
 }
 
-function AssignmentRow({ catalog, assignment: a, inheritedFrom }: { catalog: Catalog; assignment: PlannedAssignment; inheritedFrom?: string }) {
+function AssignmentRow({
+  catalog,
+  assignment: a,
+  inheritedFrom,
+  editors,
+}: {
+  catalog: Catalog;
+  assignment: PlannedAssignment;
+  inheritedFrom?: string;
+  /** Override and exemption editors, for assignments at the selected group. */
+  editors?: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const [all, setAll] = useState(false);
   const url = definitionUrl(a);
@@ -60,6 +74,12 @@ function AssignmentRow({ catalog, assignment: a, inheritedFrom }: { catalog: Cat
         <td>
           {a.displayName}
           {a.change && <span className="changed" title={a.change}> ●</span>}
+          {a.overridden && <span className="badge origin-enforcement">Overridden</span>}
+          {a.exemptions.length > 0 && (
+            <span className="badge mode-dne" title={a.exemptions.map((e) => e.reason).join('\n')}>
+              {a.exemptions.length} exemption{a.exemptions.length > 1 ? 's' : ''}
+            </span>
+          )}
         </td>
         <td>
           <OriginBadge origin={a.origin} />
@@ -98,6 +118,7 @@ function AssignmentRow({ catalog, assignment: a, inheritedFrom }: { catalog: Cat
               {a.identity && ' · needs a managed identity for remediation'}
             </p>
             {a.parameters && <pre className="code params">{JSON.stringify(a.parameters, null, 2)}</pre>}
+            {editors}
             <table className="members">
               <thead>
                 <tr>
@@ -132,7 +153,17 @@ function AssignmentRow({ catalog, assignment: a, inheritedFrom }: { catalog: Cat
   );
 }
 
-export function Hierarchy({ catalog, design }: { catalog: Catalog; design: Design }) {
+export function Hierarchy({
+  catalog,
+  design,
+  input,
+  onChange,
+}: {
+  catalog: Catalog;
+  design: Design;
+  input: DesignInput;
+  onChange: (input: DesignInput) => void;
+}) {
   const [selected, setSelected] = useState<MgRole>('root');
   const [showInherited, setShowInherited] = useState(false);
   const mg = design.mgs.find((m) => m.role === selected) ?? design.mgs[0];
@@ -167,13 +198,45 @@ export function Hierarchy({ catalog, design }: { catalog: Catalog; design: Desig
               </thead>
               <tbody>
                 {mg.assignments.map((a) => (
-                  <AssignmentRow key={a.name} catalog={catalog} assignment={a} />
+                  <AssignmentRow
+                    key={a.name}
+                    catalog={catalog}
+                    assignment={a}
+                    editors={
+                      <>
+                        <OverrideEditor key={`o-${mg.role}-${a.name}`} design={design} mg={mg} assignment={a} input={input} onChange={onChange} />
+                        <ExemptionsEditor catalog={catalog} design={design} mg={mg} assignment={a} input={input} onChange={onChange} />
+                      </>
+                    }
+                  />
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
           <p className="muted">No assignments at this level; everything here is inherited.</p>
+        )}
+        {mg.removed.length > 0 && (
+          <p className="removed">
+            Removed by override:{' '}
+            {mg.removed.map((name) => (
+              <span key={name} className="removed-item">
+                <code>{name}</code>{' '}
+                <button
+                  className="link"
+                  onClick={() => {
+                    const overrides = { ...input.overrides };
+                    const { disabled: _, ...rest } = overrides[overrideKey(mg.role, name)] ?? {};
+                    if (Object.keys(rest).length) overrides[overrideKey(mg.role, name)] = rest;
+                    else delete overrides[overrideKey(mg.role, name)];
+                    onChange({ ...input, overrides });
+                  }}
+                >
+                  Restore
+                </button>
+              </span>
+            ))}
+          </p>
         )}
         {inherited.length > 0 && (
           <>

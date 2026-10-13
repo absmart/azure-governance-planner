@@ -36,6 +36,40 @@ export type Baseline = 'low' | 'moderate' | 'high' | 'all';
  */
 export type Enforcement = 'audit' | 'alz' | 'strict';
 
+/** A scope inside the design: a management group, or a subscription / resource group by ID. */
+export type ScopeRef =
+  | { kind: 'managementGroup'; role: MgRole }
+  | { kind: 'subscription'; id: string }
+  | { kind: 'resourceGroup'; id: string };
+
+/** Changes to one assignment, keyed `<management group role>/<assignment name>`. */
+export interface AssignmentOverride {
+  enforcementMode?: 'Default' | 'DoNotEnforce';
+  /** Leave the assignment out of the design. */
+  disabled?: boolean;
+  /** Scopes the assignment doesn't apply to. */
+  notScopes?: ScopeRef[];
+  /** Parameter values that replace the defaults, by parameter name. */
+  parameters?: Record<string, unknown>;
+}
+
+/** A policy exemption: the assignment (or some of its policies) doesn't apply at a scope. */
+export interface Exemption {
+  id: string;
+  /** The assignment: its management group role and name. */
+  mg: MgRole;
+  assignment: string;
+  scope: ScopeRef;
+  /** Policy definition IDs exempted; empty for the whole assignment. */
+  policies: string[];
+  category: 'Waiver' | 'Mitigated';
+  reason: string;
+  /** yyyy-mm-dd, or empty for no expiry. */
+  expiresOn?: string;
+}
+
+export const overrideKey = (mg: MgRole, assignment: string) => `${mg}/${assignment}`;
+
 export interface DesignInput {
   rootName: string;
   /** Prefix for management group IDs, e.g. "contoso" -> "contoso-platform". */
@@ -73,6 +107,8 @@ export interface DesignInput {
   privateDnsZones: string[];
   /** Sovereignty baseline initiatives (allowed locations, confidential computing). */
   sovereignty: boolean;
+  overrides: Record<string, AssignmentOverride>;
+  exemptions: Exemption[];
 }
 
 export const DEFAULT_INPUT: DesignInput = {
@@ -101,7 +137,11 @@ export const DEFAULT_INPUT: DesignInput = {
   ddos: false,
   privateDnsZones: DEFAULT_PRIVATE_DNS_CATEGORIES,
   sovereignty: false,
+  overrides: {},
+  exemptions: [],
 };
+
+export const GOV_LOCATIONS = ['usgovvirginia', 'usgovtexas', 'usgovarizona', 'usdodeast', 'usdodcentral'];
 
 export type AssignmentOrigin = 'framework' | 'alz' | 'decision' | 'enforcement';
 
@@ -125,6 +165,11 @@ export interface PlannedAssignment {
   /** How a decision changed it from the ALZ library default. */
   change?: string;
   parameters?: Record<string, unknown>;
+  /** Scopes excluded by an override. */
+  notScopes?: ScopeRef[];
+  /** Whether an override changed the assignment. */
+  overridden?: boolean;
+  exemptions: Exemption[];
 }
 
 export interface PlannedMg {
@@ -134,6 +179,8 @@ export interface PlannedMg {
   parent: MgRole | null;
   description: string;
   assignments: PlannedAssignment[];
+  /** Assignments an override took out of the design. */
+  removed: string[];
 }
 
 export type ControlStatus = 'enforced' | 'audited' | 'manual' | 'none';
@@ -347,12 +394,17 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     parent: r.parent,
     description: MG_DESCRIPTIONS[r.role],
     assignments: [],
+    removed: [],
   }));
+  const gov = input.cloud === 'AzureUSGovernment';
+  /** In Azure Government, built-ins it doesn't have are left out. */
+  const available = (m: Member) => !gov || !catalog.policies[m.p]?.ng;
   const mgByRole = new Map(mgs.map((m) => [m.role, m]));
 
   // --- ALZ assignments -----------------------------------------------------
 
   const omitted = new Map<string, string>();
+  const omittedGov = new Set<string>();
   for (const r of roles) {
     const mg = mgByRole.get(r.role)!;
     for (const archetype of r.archetypes) {
@@ -362,6 +414,11 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
         const toggle = ALZ_TOGGLES[name];
         if (toggle && !input[toggle.decision]) {
           omitted.set(name, toggle.label);
+          continue;
+        }
+        // In Azure Government, also when none of its policies are there (an empty initiative can't be created).
+        if (gov && (a.usGov === false || (a.policies.length && !a.policies.some(available)))) {
+          omittedGov.add(name);
           continue;
         }
         let enforcementMode = a.enforcementMode;
@@ -388,13 +445,19 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
           definitionSource: a.source,
           enforcementMode,
           identity: a.identity,
-          policies: a.policies,
+          policies: a.policies.filter(available),
           rationale: `ALZ ${archetype.replace('_', ' ')} archetype.`,
           change,
+          exemptions: [],
         });
       }
     }
   }
+  if (omittedGov.size)
+    notes.push({
+      level: 'info',
+      text: `Not available in Azure Government, so left out: ${[...omittedGov].join(', ')}. Built-in policies Azure Government doesn't have are also left out of the other assignments (availability from AzAdvertizer).`,
+    });
   if (omitted.size) {
     const byLabel = new Map<string, string[]>();
     for (const [name, label] of omitted) byLabel.set(label, [...(byLabel.get(label) ?? []), name]);
@@ -425,6 +488,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       identity: false,
       policies: g.policies,
       rationale: 'Sovereignty: keeps resources in approved regions and requires Trusted Launch.',
+      exemptions: [],
       parameters: { listOfAllowedLocations: locations },
     });
     if (!locations.length)
@@ -447,6 +511,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
         identity: false,
         policies: [policy(id, 'Deny')],
         rationale: 'Data residency: allowed locations decision.',
+        exemptions: [],
         parameters: { listOfAllowedLocations: locations },
       });
     }
@@ -466,6 +531,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       identity: false,
       policies: [policy(BUILTIN_POLICY.requireTagRg, 'Deny')],
       rationale: 'Required tags decision.',
+      exemptions: [],
       parameters: { tagName: tag },
     });
     lz.assignments.push({
@@ -481,6 +547,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       identity: true,
       policies: [policy(BUILTIN_POLICY.inheritTag, 'Modify')],
       rationale: 'Required tags decision.',
+      exemptions: [],
       parameters: { tagName: tag },
     });
   }
@@ -501,6 +568,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
         identity: false,
         policies: c.policies,
         rationale: 'Confidential landing zones: confidential computing SKUs and customer-managed keys.',
+        exemptions: [],
         parameters: { listOfAllowedLocations: locations },
       });
     }
@@ -516,9 +584,13 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       existing.rationale += ` Also provides the ${f.short} compliance view.`;
       continue;
     }
+    if (gov && f.usGov === false) {
+      notes.push({ level: 'warning', text: `${f.name} is not available in Azure Government, so it isn't assigned.` });
+      continue;
+    }
     const wanted = input.frameworkScopes[f.key] ?? 'root';
     const scope = present.has(wanted) ? wanted : 'root';
-    const policies = f.refs.map((r) => ({ p: r.p, e: r.e }));
+    const policies = f.refs.map((r) => ({ p: r.p, e: r.e, ...(r.r ? { r: [r.r] } : {}) })).filter(available);
     mgByRole.get(scope)!.assignments.push({
       name: frameworkAssignmentName(f),
       displayName: f.name,
@@ -537,9 +609,8 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
         scope === 'root'
           ? `${f.short} compliance dashboard across every subscription (audit-only).`
           : `${f.short} compliance dashboard for the ${mgByRole.get(scope)!.displayName} scope (audit-only).`,
+      exemptions: [],
     });
-    if (input.cloud === 'AzureUSGovernment' && f.usGov === false)
-      notes.push({ level: 'warning', text: `${f.name} is not available in Azure Government.` });
   }
 
   // --- Framework enforcement initiative ------------------------------------
@@ -563,7 +634,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     for (const f of frameworks) {
       for (const ref of f.refs) {
         const p = catalog.policies[ref.p];
-        if (!p || p.dp || p.pv || !canDeny(p) || already.has(ref.p)) continue;
+        if (!p || p.dp || p.pv || !canDeny(p) || already.has(ref.p) || (gov && p.ng)) continue;
         if (!ref.g.some((c) => controlInScope(f, c))) continue;
         if (!candidates.has(ref.p)) candidates.set(ref.p, new Set());
         candidates.get(ref.p)!.add(f.short);
@@ -589,8 +660,59 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
           input.enforcement === 'strict'
             ? 'Strict posture: framework policies that can deny are enforced on landing zones.'
             : 'What-if: framework policies that can deny run in DoNotEnforce, so you can see what would be blocked before enforcing.',
+        exemptions: [],
       });
     }
+  }
+
+  // --- Overrides and exemptions --------------------------------------------
+
+  const roleOf = new Map(mgs.map((m) => [m.role, m]));
+  const within = (role: MgRole, ancestor: MgRole) => {
+    for (let r: MgRole | null = role; r; r = roleOf.get(r)?.parent ?? null) if (r === ancestor) return true;
+    return false;
+  };
+  const scopeLabel = (scope: ScopeRef) => (scope.kind === 'managementGroup' ? (roleOf.get(scope.role)?.displayName ?? scope.role) : scope.id);
+  for (const mg of mgs) {
+    mg.assignments = mg.assignments.filter((a) => {
+      const o = input.overrides?.[overrideKey(mg.role, a.name)];
+      if (!o) return true;
+      if (o.disabled) {
+        mg.removed.push(a.name);
+        return false;
+      }
+      const changes: string[] = [];
+      if (o.enforcementMode && o.enforcementMode !== a.enforcementMode) {
+        a.enforcementMode = o.enforcementMode;
+        changes.push(o.enforcementMode === 'Default' ? 'enforced' : 'set to DoNotEnforce');
+      }
+      const notScopes = (o.notScopes ?? []).filter((n) => n.kind !== 'managementGroup' || (roleOf.has(n.role) && within(n.role, mg.role)));
+      if (notScopes.length) {
+        a.notScopes = notScopes;
+        changes.push(`excludes ${notScopes.map(scopeLabel).join(', ')}`);
+      }
+      if (o.parameters && Object.keys(o.parameters).length) {
+        a.parameters = { ...(a.parameters ?? {}), ...o.parameters };
+        changes.push(`parameters ${Object.keys(o.parameters).join(', ')}`);
+      }
+      if (changes.length) {
+        a.overridden = true;
+        a.change = `Overridden: ${changes.join('; ')}.`;
+      }
+      return true;
+    });
+  }
+  for (const e of input.exemptions ?? []) {
+    const a = roleOf.get(e.mg)?.assignments.find((x) => x.name === e.assignment);
+    if (!a) {
+      notes.push({ level: 'warning', text: `Exemption "${e.reason || e.id}" is for ${e.assignment}, which isn't in the design any more.` });
+      continue;
+    }
+    if (e.scope.kind === 'managementGroup' && !(roleOf.has(e.scope.role) && within(e.scope.role, e.mg))) {
+      notes.push({ level: 'warning', text: `Exemption "${e.reason || e.id}" is outside ${a.name}'s scope, so it has no effect.` });
+      continue;
+    }
+    a.exemptions.push(e);
   }
 
   // --- Coverage ------------------------------------------------------------
@@ -602,13 +724,15 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
         for (const m of a.policies)
           if (ENFORCING_EFFECTS.has(m.e)) enforcingPlacements.set(m.p, [...(enforcingPlacements.get(m.p) ?? []), a.name]);
 
-  const coverage: FrameworkCoverage[] = frameworks.map((f) => {
+  const assigned = new Set(mgs.flatMap((m) => m.assignments.map((a) => a.frameworkKey)).filter(Boolean));
+  const coverage: FrameworkCoverage[] = frameworks.filter((f) => assigned.has(f.key)).map((f) => {
     const byControl = new Map<string, { automated: Set<string>; manual: number }>();
     for (const c of f.controls) byControl.set(c, { automated: new Set(), manual: 0 });
     const automatedIds = new Set<string>();
     const manualIds = new Set<string>();
     for (const ref of f.refs) {
       const p = catalog.policies[ref.p];
+      if (gov && p?.ng) continue;
       const auto = isAutomated(p, ref.e) && ref.e !== 'Disabled';
       for (const c of ref.g) {
         const entry = byControl.get(c) ?? { automated: new Set<string>(), manual: 0 };
@@ -673,7 +797,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
   for (const f of frameworks) {
     const controls = new Map<string, Set<string>>();
     for (const ref of f.refs) {
-      if (!isAutomated(catalog.policies[ref.p], ref.e)) continue;
+      if (!isAutomated(catalog.policies[ref.p], ref.e) || (gov && catalog.policies[ref.p]?.ng)) continue;
       const inScope = ref.g.filter((c) => controlInScope(f, c));
       if (!inScope.length) continue;
       if (!controls.has(ref.p)) controls.set(ref.p, new Set());
@@ -716,6 +840,16 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     notes.push({
       level: 'info',
       text: `The built-in ${nist.name} initiative maps every control. The ${input.nistBaseline} baseline${input.nistPrivacy ? ' (with privacy)' : ''} narrows coverage and enforcement candidates; the compliance dashboard still lists all controls.`,
+    });
+
+  if (gov && locations.some((l) => !GOV_LOCATIONS.includes(l)))
+    notes.push({ level: 'warning', text: `Not Azure Government regions: ${locations.filter((l) => !GOV_LOCATIONS.includes(l)).join(', ')}.` });
+  const overridden = mgs.reduce((n, m) => n + m.assignments.filter((a) => a.overridden).length + m.removed.length, 0);
+  const exempted = mgs.reduce((n, m) => n + m.assignments.reduce((k, a) => k + a.exemptions.length, 0), 0);
+  if (overridden || exempted)
+    notes.push({
+      level: 'info',
+      text: `${overridden} assignment override${overridden === 1 ? '' : 's'} and ${exempted} exemption${exempted === 1 ? '' : 's'}. Control coverage counts enforcement modes and removals, not excluded scopes or exemptions.`,
     });
 
   const allAssignments = mgs.flatMap((m) => m.assignments);

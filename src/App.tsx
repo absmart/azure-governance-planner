@@ -87,7 +87,7 @@ export default function App() {
         <main>
           <Notes notes={design.notes} />
           {!storageOk && <p className="muted">Browser storage is unavailable; decisions won't be kept after you close the page.</p>}
-          {view === 'hierarchy' && <Hierarchy catalog={catalog} design={design} />}
+          {view === 'hierarchy' && <Hierarchy catalog={catalog} design={design} input={input} onChange={setInput} />}
           {view === 'coverage' && <Coverage catalog={catalog} design={design} />}
           {view === 'policies' && <Policies catalog={catalog} design={design} />}
           <footer className="muted">

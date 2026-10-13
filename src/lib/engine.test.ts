@@ -240,3 +240,71 @@ describe('defaults', () => {
     expect(d.notes.some((n) => n.text.includes('DDoS Network Protection is turned off'))).toBe(true);
   });
 });
+
+describe('Azure Government', () => {
+  const gov = design({ cloud: 'AzureUSGovernment', allowedLocations: ['usgovvirginia'], frameworks: ['nist-800-53-r5', 'pci-dss-4'] });
+
+  it('leaves out ALZ assignments and frameworks Azure Government does not have', () => {
+    const names = gov.mgs.flatMap((m) => m.assignments.map((a) => a.name));
+    expect(names).not.toContain('Deploy-VM-Backup');
+    expect(names).toContain('Audit-NIST-800-53-R5');
+    expect(names.some((n) => n.startsWith('Audit-PCI'))).toBe(false);
+    expect(gov.notes.some((n) => n.text.includes('Not available in Azure Government'))).toBe(true);
+  });
+
+  it('leaves Government-missing built-ins out of assignments and coverage', () => {
+    for (const a of gov.mgs.flatMap((m) => m.assignments))
+      for (const m of a.policies) expect(catalog.policies[m.p]?.ng, `${a.name} ${m.p}`).toBeFalsy();
+    const commercial = design({ frameworks: ['nist-800-53-r5'] }).coverage[0];
+    expect(gov.coverage[0].automatedPolicies).toBeLessThanOrEqual(commercial.automatedPolicies);
+  });
+
+  it('warns about commercial regions', () => {
+    expect(design({ cloud: 'AzureUSGovernment' }).notes.some((n) => n.text.startsWith('Not Azure Government regions'))).toBe(true);
+    expect(gov.notes.some((n) => n.text.startsWith('Not Azure Government regions'))).toBe(false);
+  });
+});
+
+describe('overrides and exemptions', () => {
+  it('changes enforcement, removes, excludes scopes and sets parameters', () => {
+    const d = design({
+      overrides: {
+        'landingzones/Deny-IP-forwarding': { enforcementMode: 'DoNotEnforce' },
+        'root/Deny-Classic-Resources': { disabled: true },
+        'landingzones/Deny-MgmtPorts-Internet': {
+          notScopes: [
+            { kind: 'managementGroup', role: 'online' },
+            { kind: 'managementGroup', role: 'platform' },
+            { kind: 'subscription', id: '1111' },
+          ],
+        },
+        'root/Audit-ZoneResiliency': { parameters: { effect: 'Disabled' } },
+      },
+    });
+    const at = (role: string, name: string) => d.mgs.find((m) => m.role === role)!.assignments.find((a) => a.name === name);
+    expect(at('landingzones', 'Deny-IP-forwarding')!.enforcementMode).toBe('DoNotEnforce');
+    expect(at('landingzones', 'Deny-IP-forwarding')!.overridden).toBe(true);
+    expect(at('root', 'Deny-Classic-Resources')).toBeUndefined();
+    expect(d.mgs.find((m) => m.role === 'root')!.removed).toEqual(['Deny-Classic-Resources']);
+    // Platform isn't under Landing zones, so only Online and the subscription stay.
+    expect(at('landingzones', 'Deny-MgmtPorts-Internet')!.notScopes).toEqual([
+      { kind: 'managementGroup', role: 'online' },
+      { kind: 'subscription', id: '1111' },
+    ]);
+    expect(at('root', 'Audit-ZoneResiliency')!.parameters).toEqual({ effect: 'Disabled' });
+  });
+
+  it('attaches exemptions inside the assignment scope and warns about the rest', () => {
+    const base = { category: 'Waiver' as const, policies: [], reason: 'legacy' };
+    const d = design({
+      exemptions: [
+        { ...base, id: 'a', mg: 'landingzones', assignment: 'Deny-IP-forwarding', scope: { kind: 'managementGroup', role: 'corp' } },
+        { ...base, id: 'b', mg: 'landingzones', assignment: 'Deny-IP-forwarding', scope: { kind: 'managementGroup', role: 'platform' } },
+        { ...base, id: 'c', mg: 'root', assignment: 'Not-There', scope: { kind: 'subscription', id: '1' } },
+      ],
+    });
+    const a = d.mgs.find((m) => m.role === 'landingzones')!.assignments.find((x) => x.name === 'Deny-IP-forwarding')!;
+    expect(a.exemptions.map((e) => e.id)).toEqual(['a']);
+    expect(d.notes.filter((n) => n.level === 'warning' && n.text.startsWith('Exemption')).length).toBe(2);
+  });
+});

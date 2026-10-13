@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { portalInitiativeUrl, type Catalog } from '../lib/catalog';
 import { PRIVATE_DNS_CATEGORIES } from '../lib/privateDns';
-import type { Baseline, DesignInput, Enforcement, MgRole } from '../lib/engine';
+import { DEFAULT_INPUT, GOV_LOCATIONS, type Baseline, type DesignInput, type Enforcement, type MgRole } from '../lib/engine';
 
 type BoolKey = { [K in keyof DesignInput]: DesignInput[K] extends boolean ? K : never }[keyof DesignInput];
 
@@ -101,7 +101,21 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
         </label>
         <label className="field">
           Cloud
-          <select value={input.cloud} onChange={(e) => set('cloud', e.target.value as DesignInput['cloud'])}>
+          <select
+            value={input.cloud}
+            onChange={(e) => {
+              const cloud = e.target.value as DesignInput['cloud'];
+              const gov = cloud === 'AzureUSGovernment';
+              const locations = input.allowedLocations.map((l) => l.trim()).filter(Boolean);
+              // Swap the regions when they belong to the other cloud.
+              const fits = locations.length > 0 && locations.every((l) => GOV_LOCATIONS.includes(l) === gov);
+              onChange({
+                ...input,
+                cloud,
+                allowedLocations: fits ? input.allowedLocations : gov ? ['usgovvirginia', 'usgovtexas'] : DEFAULT_INPUT.allowedLocations,
+              });
+            }}
+          >
             <option value="AzureCloud">Azure commercial</option>
             <option value="AzureUSGovernment">Azure Government</option>
           </select>

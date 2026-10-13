@@ -150,6 +150,9 @@ function usePolicy(id, fallback) {
       v: p.policyVersion,
       t: p.policyType === 'BuiltIn' ? 'BuiltIn' : 'ALZ',
       ...(roleIds(p.policyRolesUsed).length ? { r: roleIds(p.policyRolesUsed) } : {}),
+      // Built-ins missing from Azure Government. Undated rows (the oldest built-ins) list
+      // only AzureCloud even when they are in Government, so only dated rows count.
+      ...(p.policyType === 'BuiltIn' && p.dateAdded && !/AzureUSGovernment/.test(p.cloudEnvs ?? '') ? { ng: true } : {}),
       ...(p.policyPreview ? { pv: true } : {}),
       ...(p.policyDeprecated ? { dp: true } : {}),
     };
@@ -190,7 +193,7 @@ for (const f of FRAMEWORKS) {
     usePolicy(pid, member);
     // The effect the initiative assigns by default (often parameterised to Audit).
     const effect = resolveEffect(def, ref) || member?.initiativePolicyEffectDefault || policies[pid]?.e || '';
-    return { p: pid, e: effect, g: (ref.groupNames ?? []).map(control) };
+    return { p: pid, e: effect, g: (ref.groupNames ?? []).map(control), r: ref.policyDefinitionReferenceId };
   });
 
   frameworks.push({
@@ -290,6 +293,17 @@ const alzDefinitions = await libraryFolder('policy_definitions');
 const alzDefaults = await get(`${ALZ_LIB}/alz_policy_default_values.json`);
 const assignmentFiles = {};
 
+/** One member per policy, with every reference ID it is included under. */
+function mergeMembers(members) {
+  const byPolicy = new Map();
+  for (const m of members) {
+    const seen = byPolicy.get(m.p);
+    if (!seen) byPolicy.set(m.p, { ...m, ...(m.r ? { r: [...m.r] } : {}) });
+    else if (m.r) seen.r = [...new Set([...(seen.r ?? []), ...m.r])];
+  }
+  return [...byPolicy.values()];
+}
+
 const assignments = {};
 for (const name of assignmentNames) {
   const a = await get(`${ALZ_LIB}/policy_assignments/${name}.alz_policy_assignment.json`);
@@ -317,7 +331,7 @@ for (const name of assignmentNames) {
         .flatMap((i) => initiativeMembers.get(i.initiativeId))
         .find((m) => m.initiativePolicyId === pid);
       usePolicy(pid, csv);
-      return { p: pid, e: resolveEffect(set, ref, p.parameters) || policies[pid]?.e || '' };
+      return { p: pid, e: resolveEffect(set, ref, p.parameters) || policies[pid]?.e || '', r: [ref.policyDefinitionReferenceId] };
     });
   } else if (isSet) {
     const set = initiativeInfo.get(defName);
@@ -325,7 +339,7 @@ for (const name of assignmentNames) {
       definitionName = set.initiativeName;
       members = initiativeMembers.get(set.initiativeId).map((m) => {
         usePolicy(m.initiativePolicyId, m);
-        return { p: m.initiativePolicyId, e: m.initiativePolicyEffectDefault || policies[m.initiativePolicyId]?.e || '' };
+        return { p: m.initiativePolicyId, e: m.initiativePolicyEffectDefault || policies[m.initiativePolicyId]?.e || '', r: [m.initiativePolicyReferenceId] };
       });
     } else console.warn(`  no initiative found for ${name} (${defName})`);
   } else {
@@ -344,9 +358,11 @@ for (const name of assignmentNames) {
     kind: isSet ? 'initiative' : 'policy',
     source: builtIn ? 'BuiltIn' : 'ALZ',
     enforcementMode: p.enforcementMode ?? 'Default',
+    // A built-in definition missing from Azure Government.
+    ...(builtIn && (isSet ? initiativeInfo.get(defName)?.initiativeAzUSGov === 'false' : policies[defName]?.ng) ? { usGov: false } : {}),
     ...(typeof effect === 'string' ? { effect } : {}),
     identity: !!a.identity,
-    policies: [...new Map(members.map((m) => [m.p, m])).values()],
+    policies: mergeMembers(members),
   };
 }
 console.log(`  ${assignmentNames.length} assignments across ${ALZ_ARCHETYPES.length} archetypes`);
@@ -372,10 +388,13 @@ for (const [key, name] of Object.entries(EXTRA_INITIATIVES)) {
     name,
     description: info.initiativeDescription,
     version: info.initiativeVersion,
-    policies: initiativeMembers.get(info.initiativeId).map((m) => {
-      usePolicy(m.initiativePolicyId, m);
-      return { p: m.initiativePolicyId, e: m.initiativePolicyEffectDefault || policies[m.initiativePolicyId]?.e || '' };
-    }),
+    usGov: info.initiativeAzUSGov !== 'false',
+    policies: mergeMembers(
+      initiativeMembers.get(info.initiativeId).map((m) => {
+        usePolicy(m.initiativePolicyId, m);
+        return { p: m.initiativePolicyId, e: m.initiativePolicyEffectDefault || policies[m.initiativePolicyId]?.e || '', r: [m.initiativePolicyReferenceId] };
+      }),
+    ),
   };
 }
 

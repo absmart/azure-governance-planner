@@ -62,6 +62,12 @@ const REGION_CODES: Record<string, string> = {
   westus: 'wus',
   westus2: 'wus2',
   westus3: 'wus3',
+  // Azure Government
+  usdodcentral: 'usdc',
+  usdodeast: 'usde',
+  usgovarizona: 'usga',
+  usgovtexas: 'usgt',
+  usgovvirginia: 'usgv',
 };
 
 const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');

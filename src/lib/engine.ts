@@ -24,6 +24,7 @@ export type MgRole =
   | 'local'
   | 'confidential-corp'
   | 'confidential-online'
+  | 'parkinglot'
   | 'sandbox'
   | 'decommissioned';
 
@@ -93,6 +94,15 @@ export interface DesignInput {
   /** Confidential Corp / Online landing zones (Sovereign Landing Zone pattern). */
   confidential: boolean;
   sandbox: boolean;
+  /**
+   * A management group new subscriptions land in (the tenant's default
+   * management group) until they're moved to their landing zone.
+   */
+  parkingLot: boolean;
+  /** sandbox: ALZ's sandbox guardrails; locked: no resources at all; inherit: only the root's. */
+  parkingLotGuardrails: 'sandbox' | 'locked' | 'inherit';
+  /** Tenant setting: only users with permission at the root can create management groups. */
+  requireManagementGroupAuthorization: boolean;
   decommissioned: boolean;
   allowedLocations: string[];
   requiredTags: string[];
@@ -129,6 +139,9 @@ export const DEFAULT_INPUT: DesignInput = {
   local: false,
   confidential: false,
   sandbox: true,
+  parkingLot: false,
+  parkingLotGuardrails: 'sandbox',
+  requireManagementGroupAuthorization: true,
   decommissioned: true,
   allowedLocations: ['eastus2', 'centralus'],
   requiredTags: ['CostCenter', 'Environment'],
@@ -267,6 +280,7 @@ export const MG_ORDER: MgRole[] = [
   'local',
   'confidential-corp',
   'confidential-online',
+  'parkinglot',
   'sandbox',
   'decommissioned',
 ];
@@ -315,6 +329,7 @@ const MG_DESCRIPTIONS: Record<MgRole, string> = {
   local: 'Azure Local clusters in disconnected operations. Resource types they do not support are audited.',
   'confidential-corp': 'Corp workloads that must run on confidential computing with customer-managed keys.',
   'confidential-online': 'Online workloads that must run on confidential computing with customer-managed keys.',
+  parkinglot: 'Where new subscriptions land (the default management group) until they are moved to their landing zone.',
   sandbox: 'Experimentation subscriptions, isolated from corporate networks.',
   decommissioned: 'Subscriptions being cancelled; resource creation is blocked.',
 };
@@ -386,6 +401,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
     add('confidential-corp', 'landingzones', ['corp'], 'Confidential Corp');
     add('confidential-online', 'landingzones', ['online'], 'Confidential Online');
   }
+  if (input.parkingLot) add('parkinglot', 'root', input.parkingLotGuardrails === 'sandbox' ? ['sandbox'] : [], 'Parking lot');
   if (input.sandbox) add('sandbox', 'root', ['sandbox'], 'Sandbox');
   if (input.decommissioned) add('decommissioned', 'root', ['decommissioned'], 'Decommissioned');
 
@@ -552,6 +568,26 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       rationale: 'Required tags decision.',
       exemptions: [],
       parameters: { tagName: tag },
+    });
+  }
+
+  if (input.parkingLot && input.parkingLotGuardrails === 'locked') {
+    const id = BUILTIN_POLICY.allowedResourceTypes;
+    mgByRole.get('parkinglot')!.assignments.push({
+      name: 'Deny-Parking-Resources',
+      displayName: 'No resources in parking lot subscriptions',
+      description: 'Blocks every resource type until the subscription is moved to its landing zone.',
+      origin: 'decision',
+      kind: 'policy',
+      definitionId: builtInPolicyId(id),
+      definitionName: catalog.policies[id]?.n ?? 'Allowed resource types',
+      definitionSource: 'BuiltIn',
+      enforcementMode: input.enforcement === 'audit' ? 'DoNotEnforce' : 'Default',
+      identity: false,
+      policies: [policy(id, 'Deny')],
+      rationale: 'Locked parking lot: new subscriptions can hold nothing until they are placed.',
+      parameters: { listOfResourceTypesAllowed: [], effect: 'Deny' },
+      exemptions: [],
     });
   }
 

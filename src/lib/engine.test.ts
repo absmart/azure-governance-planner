@@ -308,3 +308,23 @@ describe('overrides and exemptions', () => {
     expect(d.notes.filter((n) => n.level === 'warning' && n.text.startsWith('Exemption')).length).toBe(2);
   });
 });
+
+describe('parking lot', () => {
+  it('is off by default', () => {
+    expect(design({}).mgs.map((m) => m.role)).not.toContain('parkinglot');
+  });
+
+  it('adds a Parking lot group under the root with the chosen guardrails', () => {
+    const sandbox = design({ parkingLot: true }).mgs.find((m) => m.role === 'parkinglot')!;
+    expect(sandbox.parent).toBe('root');
+    expect(sandbox.id).toBe('contoso-parkinglot');
+    expect(sandbox.assignments.map((a) => a.name)).toEqual(['Enforce-ALZ-Sandbox']);
+
+    const locked = design({ parkingLot: true, parkingLotGuardrails: 'locked' }).mgs.find((m) => m.role === 'parkinglot')!;
+    expect(locked.assignments.map((a) => a.name)).toEqual(['Deny-Parking-Resources']);
+    expect(locked.assignments[0].parameters).toEqual({ listOfResourceTypesAllowed: [], effect: 'Deny' });
+
+    const inherit = design({ parkingLot: true, parkingLotGuardrails: 'inherit' }).mgs.find((m) => m.role === 'parkinglot')!;
+    expect(inherit.assignments).toEqual([]);
+  });
+});

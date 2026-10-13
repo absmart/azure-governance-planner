@@ -532,6 +532,7 @@ td > .badge:first-child {
 }
 
 .mg-node.mg-sandbox,
+.mg-node.mg-parkinglot,
 .mg-node.mg-decommissioned {
   border-left-color: var(--none);
 }

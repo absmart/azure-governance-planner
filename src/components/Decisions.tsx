@@ -211,6 +211,31 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
           'For Azure Local clusters in disconnected operations: audits resource types they do not support. Rarely needed.',
         )}
         {check('confidential', 'Confidential landing zones', 'Confidential Corp and Online (Sovereign Landing Zone)')}
+        {check(
+          'parkingLot',
+          'Parking lot for new subscriptions',
+          'A management group new subscriptions land in, instead of the tenant root group, until they are moved to their landing zone.',
+        )}
+        {input.parkingLot && (
+          <div className="baseline">
+            <label className="field">
+              Parking lot guardrails
+              <select
+                value={input.parkingLotGuardrails}
+                onChange={(e) => set('parkingLotGuardrails', e.target.value as DesignInput['parkingLotGuardrails'])}
+              >
+                <option value="sandbox">Sandbox: no connections to corporate networks</option>
+                <option value="locked">Locked: no resources until moved</option>
+                <option value="inherit">Root guardrails only</option>
+              </select>
+            </label>
+            {check(
+              'requireManagementGroupAuthorization',
+              'Require permission to create management groups',
+              'Tenant setting: only users with write permission on the tenant root group can create new management groups.',
+            )}
+          </div>
+        )}
         {check('sandbox', 'Sandbox')}
         {check('decommissioned', 'Decommissioned')}
       </Section>

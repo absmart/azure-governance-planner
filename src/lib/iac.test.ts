@@ -28,6 +28,8 @@ const everything: Partial<DesignInput> = {
   cmk: true,
   sovereignty: true,
   local: true,
+  parkingLot: true,
+  parkingLotGuardrails: 'locked',
   overrides: {
     'landingzones/Deny-MgmtPorts-Internet': { notScopes: [{ kind: 'managementGroup', role: 'online' }] },
     'landingzones/Deny-IP-forwarding': { enforcementMode: 'DoNotEnforce' },
@@ -370,6 +372,21 @@ describe('overrides and exemptions in the export', () => {
         expiresOn: null,
       }),
     ]);
+  });
+});
+
+describe('parking lot in the export', () => {
+  it('sets the tenant default management group only when there is a parking lot', () => {
+    expect(model().hierarchySettings).toBeNull();
+    const m = model({ parkingLot: true, requireManagementGroupAuthorization: false });
+    expect(m.hierarchySettings).toEqual({ defaultManagementGroupId: 'contoso-parkinglot', requireAuthorizationForGroupCreation: false });
+    expect(m.managementGroups.find((g) => g.id === 'contoso-parkinglot')!.parentId).toBe('contoso');
+    const files = generateIacFiles('terraform', m, { environment: 'prd', values: {} });
+    expect(JSON.parse(files.find((f) => f.name === 'design.auto.tfvars.json')!.content).hierarchy_settings).toEqual({
+      default_management_group_id: 'contoso-parkinglot',
+      require_authorization_for_group_creation: false,
+    });
+    expect(files.find((f) => f.name === 'README.md')!.content).toContain("sets the tenant's default management group to `contoso-parkinglot`");
   });
 });
 

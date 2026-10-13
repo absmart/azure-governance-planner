@@ -405,6 +405,7 @@ for (const id of [
   '96670d01-0a4d-4649-9c89-2d3abc0a5025', // Require a tag on resource groups
   '726aca4c-86e9-4b04-b0c5-073027359532', // Inherit a tag from the resource group if missing
   '6c112d4e-5bc7-47ae-a041-ea2d9dccd749', // Not allowed resource types
+  'a08ec900-254a-4555-9bf5-e42af04b5c5c', // Allowed resource types (locked parking lot)
 ]) usePolicy(id);
 
 const catalog = {

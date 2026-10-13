@@ -176,6 +176,11 @@ export interface IacModel {
   assignments: IacAssignment[];
   platform: PlatformResources;
   platformRoleAssignments: PlatformRoleAssignment[];
+  /**
+   * Tenant hierarchy settings: the management group new subscriptions land in
+   * (the parking lot) and whether creating management groups needs permission.
+   */
+  hierarchySettings: { defaultManagementGroupId: string; requireAuthorizationForGroupCreation: boolean } | null;
   /** "public" or "usgovernment" (the Terraform provider's environment). */
   cloud: 'public' | 'usgovernment';
   exemptions: IacExemption[];
@@ -560,6 +565,12 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     platform,
     platformRoleAssignments,
     cloud: gov ? 'usgovernment' : 'public',
+    hierarchySettings: design.input.parkingLot
+      ? {
+          defaultManagementGroupId: mgIdOf('parkinglot'),
+          requireAuthorizationForGroupCreation: design.input.requireManagementGroupAuthorization,
+        }
+      : null,
     exemptions,
     subscriptionPlacements,
     inputs,
@@ -716,6 +727,9 @@ param policyAssignments array = []
 @description('Policy exemptions: { name, managementGroupId, assignment, scope: { kind, ... }, policyDefinitionReferenceIds, category, expiresOn }.')
 param policyExemptions array = []
 
+@description('Tenant hierarchy settings: { defaultManagementGroupId, requireAuthorizationForGroupCreation }. Empty to leave them as they are.')
+param hierarchySettings object = {}
+
 @description('Platform resources to create for the policies to point at: { logAnalyticsWorkspace, userAssignedIdentity, dataCollectionRules, privateDnsResourceGroup }.')
 param platformResources object = {}
 
@@ -822,6 +836,21 @@ resource mgs 'Microsoft.Management/managementGroups@2023-04-01' = [
     }
   }
 ]
+
+// New subscriptions land in the default management group (the parking lot) instead of the tenant root group.
+resource tenantRootGroup 'Microsoft.Management/managementGroups@2023-04-01' existing = {
+  name: tenant().tenantId
+}
+
+resource tenantSettings 'Microsoft.Management/managementGroups/settings@2023-04-01' = if (!empty(hierarchySettings)) {
+  parent: tenantRootGroup
+  name: 'default'
+  properties: {
+    defaultManagementGroup: tenantResourceId('Microsoft.Management/managementGroups', hierarchySettings.?defaultManagementGroupId ?? rootId)
+    requireAuthorizationForGroupCreation: hierarchySettings.?requireAuthorizationForGroupCreation ?? false
+  }
+  dependsOn: [mgs]
+}
 
 module definitions 'modules/policy-definitions.bicep' = {
   name: take('policy-definitions-\${rootId}', 64)
@@ -1379,6 +1408,7 @@ param policySetDefinitions = loadJsonContent('lib/policy-set-definitions.json')
 param policyAssignments = loadJsonContent('lib/policy-assignments.json')
 param platformResources = loadJsonContent('lib/platform-resources.json')
 param policyExemptions = loadJsonContent('lib/policy-exemptions.json')
+param hierarchySettings = loadJsonContent('lib/hierarchy-settings.json')
 param platformRoleAssignments = loadJsonContent('lib/platform-role-assignments.json')
 param subscriptionPlacements = loadJsonContent('lib/subscription-placements.json')
 `;
@@ -1423,7 +1453,16 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
+    # The tenant's hierarchy settings have no azurerm resource.
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 2.0"
+    }
   }
+}
+
+provider "azapi" {
+  environment = var.cloud_environment
 }
 ${provider}
 # Platform resources go in the management and private DNS zone subscriptions
@@ -1583,6 +1622,15 @@ variable "subscription_placements" {
     input               = string
   }))
   default = []
+}
+
+variable "hierarchy_settings" {
+  description = "Tenant hierarchy settings: the management group new subscriptions land in, and whether creating management groups needs permission. Null leaves them as they are."
+  type = object({
+    default_management_group_id              = string
+    require_authorization_for_group_creation = bool
+  })
+  default = null
 }
 
 variable "log_analytics_retention_in_days" {
@@ -1973,6 +2021,23 @@ resource "azurerm_management_group_subscription_association" "platform" {
   subscription_id     = "/subscriptions/\${var.policy_values[each.value.input]}"
 }
 
+# New subscriptions land in the default management group (the parking lot)
+# instead of the tenant root group.
+data "azapi_client_config" "current" {}
+
+resource "azapi_resource" "hierarchy_settings" {
+  count     = var.hierarchy_settings == null ? 0 : 1
+  type      = "Microsoft.Management/managementGroups/settings@2023-04-01"
+  parent_id = "/providers/Microsoft.Management/managementGroups/\${data.azapi_client_config.current.tenant_id}"
+  name      = "default"
+  body = {
+    properties = {
+      defaultManagementGroup               = local.management_group_ids[var.hierarchy_settings.default_management_group_id]
+      requireAuthorizationForGroupCreation = var.hierarchy_settings.require_authorization_for_group_creation
+    }
+  }
+}
+
 # Exemptions, at their scope.
 locals {
   exemptions = { for e in var.policy_exemptions : "\${e.scope_kind}/\${coalesce(e.scope_management_group_id, e.scope_subscription_id, "-")}/\${coalesce(e.scope_resource_group_name, "-")}/\${e.name}" => e }
@@ -2132,6 +2197,12 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
       expires_on: e.expiresOn ?? undefined,
     })),
     cloud_environment: model.cloud,
+    hierarchy_settings: model.hierarchySettings
+      ? {
+          default_management_group_id: model.hierarchySettings.defaultManagementGroupId,
+          require_authorization_for_group_creation: model.hierarchySettings.requireAuthorizationForGroupCreation,
+        }
+      : undefined,
   });
 }
 
@@ -2267,7 +2338,7 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 ${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
     unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
-${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
+${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
 - **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
   their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
@@ -2300,6 +2371,16 @@ function platformSection(model: IacModel): string {
       };`,
   ].filter(Boolean);
   return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
+}
+
+function hierarchySection(model: IacModel): string {
+  const h = model.hierarchySettings;
+  if (!h) return '';
+  return `- **Parking lot.** The export sets the tenant's default management group to \`${h.defaultManagementGroupId}\`, so new
+  subscriptions land there instead of the tenant root group${
+    h.requireAuthorizationForGroupCreation ? ', and requires permission on the tenant root group to create management groups' : ''
+  }. Changing these tenant settings needs Owner on the tenant root group.
+`;
 }
 
 function placementSection(model: IacModel, options: ExportOptions): string {
@@ -2439,6 +2520,7 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'lib/subscription-placements.json', content: json(placementsFor(model, options)), description: 'design' },
         { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
         { name: 'lib/policy-exemptions.json', content: json(model.exemptions), description: 'design' },
+        { name: 'lib/hierarchy-settings.json', content: json(model.hierarchySettings ?? {}), description: 'design' },
         { name: 'lib/policy-set-definitions.json', content: json(model.policySetDefinitions), description: 'design' },
         { name: 'lib/policy-definitions.json', content: json(model.policyDefinitions), description: 'design' },
         { name: 'README.md', content: bicepReadme(model, options), description: 'how to deploy' },

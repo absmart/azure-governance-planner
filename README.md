@@ -23,6 +23,8 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 
 For **Azure Government**, the export uses Government private DNS zone names (and sets them on ALZ's private DNS policy), targets the `usgovernment` cloud in Terraform, and leaves out built-in policies Azure Government doesn't have, per AzAdvertizer's availability data. In the app, each assignment can be **overridden** (enforcement mode, removal, excluded scopes, parameters) and **exempted**, wholly or for chosen policies, at a management group, subscription or resource group; both are part of the export.
 
+With a **parking lot** (Management groups in the decisions panel), new subscriptions land in a Parking lot management group instead of the tenant root group: the export sets the tenant's default management group to it (and, optionally, requires permission to create management groups). The parking lot can carry the Sandbox guardrails, block every resource until the subscription is moved, or only inherit the root's guardrails. Terraform uses the `azapi` provider for the tenant setting.
+
 Deploying needs tenant-level rights (Owner at the tenant root management group, or equivalent). See the README in each export.
 
 To write sample exports for `az bicep build` and `terraform validate`, run `IAC_OUT_DIR=<dir> npm test`.

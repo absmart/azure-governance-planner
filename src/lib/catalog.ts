@@ -121,6 +121,7 @@ export const BUILTIN_POLICY = {
   allowedLocationsRg: 'e765b5de-1225-4ba3-bd56-1ac6695af988',
   requireTagRg: '96670d01-0a4d-4649-9c89-2d3abc0a5025',
   inheritTag: '726aca4c-86e9-4b04-b0c5-073027359532',
+  allowedResourceTypes: 'a08ec900-254a-4555-9bf5-e42af04b5c5c',
 } as const;
 
 export const portalPolicyUrl = (id: string) => `https://www.azadvertizer.net/azpolicyadvertizer/${id}.html`;

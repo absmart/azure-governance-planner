@@ -10,6 +10,7 @@
 import { BUILTIN_POLICY, canDeny, isAutomated, type Catalog, type Framework, type Member } from './catalog';
 import { familyOf } from './families';
 import { DEFAULT_PIM, buildPim, type PimDesign, type PimInput } from './pim';
+import { uuidv5 } from './uuid';
 import { DEFAULT_PRIVATE_DNS_CATEGORIES } from './privateDns';
 
 export type MgRole =
@@ -141,6 +142,8 @@ export interface DesignInput {
   exemptions: Exemption[];
   /** Privileged Identity Management for Azure resource roles. */
   pim: PimInput;
+  /** ALZ's custom roles (Network Management, Security Operations, ...), defined at the top management group. */
+  alzCustomRoles: boolean;
 }
 
 export const DEFAULT_INPUT: DesignInput = {
@@ -176,7 +179,19 @@ export const DEFAULT_INPUT: DesignInput = {
   overrides: {},
   exemptions: [],
   pim: DEFAULT_PIM,
+  alzCustomRoles: true,
 };
+
+/** An ALZ custom role as the design defines it. */
+export interface CustomRole {
+  /** "alz:<role name>", for PIM. */
+  key: string;
+  /** ALZ's role name; the role is named "<name> (<root management group>)" so it's unique in the tenant. */
+  name: string;
+  description: string;
+  /** Deterministic GUID: UUID v5 of "<root management group>/<name>". */
+  roleDefinitionId: string;
+}
 
 /** Custom policy definition behind the locked parking lot. */
 export const PARKING_LOT_POLICY = 'Deny-ParkingLot-Resources';
@@ -292,6 +307,7 @@ export interface Design {
   notes: Note[];
   /** Privileged Identity Management, or null when it's off. */
   pim: PimDesign | null;
+  customRoles: CustomRole[];
   stats: {
     managementGroups: number;
     assignments: number;
@@ -945,11 +961,20 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
       text: `${overridden} assignment override${overridden === 1 ? '' : 's'} and ${exempted} exemption${exempted === 1 ? '' : 's'}. Control coverage counts enforcement modes and removals, not excluded scopes or exemptions.`,
     });
 
+  const customRoles: CustomRole[] = input.alzCustomRoles
+    ? (catalog.alz.roles ?? []).map((r) => ({
+        key: `alz:${r.name}`,
+        name: r.name,
+        description: r.description,
+        roleDefinitionId: uuidv5(`${root.id}/${r.name}`),
+      }))
+    : [];
   const pim = buildPim(
     input.pim ?? DEFAULT_PIM,
     frameworks.filter((f) => assigned.has(f.key)),
     input.nistBaseline,
     new Set(mgs.map((m) => m.role)),
+    customRoles,
   );
 
   const allAssignments = mgs.flatMap((m) => m.assignments);
@@ -961,6 +986,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
     policies: [...rows.values()],
     notes,
     pim,
+    customRoles,
     stats: {
       managementGroups: mgs.length,
       assignments: allAssignments.length,

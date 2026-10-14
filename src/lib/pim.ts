@@ -7,7 +7,8 @@
 
 import type { MgRole } from './engine';
 
-export type PimRoleKey = 'owner' | 'userAccessAdministrator' | 'rbacAdministrator' | 'contributor';
+/** A built-in role key, or "alz:<role name>" for an ALZ custom role. */
+export type PimRoleKey = string;
 
 export interface PimRole {
   key: PimRoleKey;
@@ -24,6 +25,11 @@ export const PIM_ROLES: PimRole[] = [
   { key: 'rbacAdministrator', name: 'Role Based Access Control Administrator', roleDefinitionId: 'f58310d9-a9f6-439a-9e8d-f62e7b41a168', grantsAccess: true },
   { key: 'contributor', name: 'Contributor', roleDefinitionId: 'b24988ac-6180-42a0-ab88-20f7382dd24c', grantsAccess: false },
 ];
+
+/** The roles PIM can manage: the built-ins, then the design's ALZ custom roles. */
+export function pimRoles(customRoles: { key: string; name: string; roleDefinitionId: string }[] = []): PimRole[] {
+  return [...PIM_ROLES, ...customRoles.map((r) => ({ ...r, grantsAccess: false }))];
+}
 
 export type PimProfile = 'standard' | 'high';
 
@@ -61,8 +67,8 @@ export interface PimSettings {
   requireMfa: boolean;
   requireJustification: boolean;
   requireTicket: boolean;
-  /** Roles whose activation needs approval. */
-  approvalRoles: PimRoleKey[];
+  /** Whose activation needs approval: roles that grant access to others, or every role. */
+  approval: 'access' | 'all';
   /** Eligible assignments expire after (P180D); permanent eligibility isn't allowed. */
   eligibleExpireAfter: string;
   /** Active assignments expire after (P15D); permanent active assignments aren't allowed. */
@@ -77,7 +83,7 @@ export const PROFILE_SETTINGS: Record<PimProfile, PimSettings> = {
     requireMfa: true,
     requireJustification: true,
     requireTicket: false,
-    approvalRoles: PIM_ROLES.filter((r) => r.grantsAccess).map((r) => r.key),
+    approval: 'access',
     eligibleExpireAfter: 'P365D',
     activeExpireAfter: 'P15D',
     accessReview: 'quarterly',
@@ -87,7 +93,7 @@ export const PROFILE_SETTINGS: Record<PimProfile, PimSettings> = {
     requireMfa: true,
     requireJustification: true,
     requireTicket: true,
-    approvalRoles: PIM_ROLES.map((r) => r.key),
+    approval: 'all',
     eligibleExpireAfter: 'P180D',
     activeExpireAfter: 'P15D',
     accessReview: 'monthly',
@@ -165,6 +171,7 @@ export function buildPim(
   frameworks: { key: string; short: string }[],
   nistBaseline: string,
   roles: Set<MgRole>,
+  customRoles: { key: string; name: string; roleDefinitionId: string }[] = [],
 ): PimDesign | null {
   if (!pim.enabled) return null;
   const auto = pimProfileFor(
@@ -177,7 +184,9 @@ export function buildPim(
     profile,
     reason: pim.profile === 'auto' ? auto.reason : `${profile === 'high' ? 'High' : 'Standard'} (chosen)`,
     settings,
-    roles: PIM_ROLES.filter((r) => pim.roles.includes(r.key)).map((r) => ({ ...r, requireApproval: settings.approvalRoles.includes(r.key) })),
+    roles: pimRoles(customRoles)
+      .filter((r) => pim.roles.includes(r.key))
+      .map((r) => ({ ...r, requireApproval: settings.approval === 'all' || r.grantsAccess })),
     eligibilities: pim.eligibilities.filter((e) => roles.has(e.mg) && pim.roles.includes(e.role)),
     controls: frameworks.filter((f) => PIM_CONTROLS[f.key]).map((f) => ({ framework: f.short, controls: PIM_CONTROLS[f.key] })),
   };

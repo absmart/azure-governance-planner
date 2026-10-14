@@ -5,6 +5,7 @@ import catalogJson from '../data/catalog.json';
 import type { Catalog } from './catalog';
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './engine';
 import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, manualPolicyCount, unsetInputs } from './iac';
+import { DEFAULT_PIM } from './pim';
 import { crc32, createZip } from './zip';
 
 const catalog = catalogJson as unknown as Catalog;
@@ -30,6 +31,11 @@ const everything: Partial<DesignInput> = {
   local: true,
   parkingLot: true,
   parkingLotGuardrails: 'locked',
+  pim: {
+    ...DEFAULT_PIM,
+    roles: [...DEFAULT_PIM.roles, 'alz:Network-Management'],
+    eligibilities: [...DEFAULT_PIM.eligibilities, { id: 'network', label: 'Network administrators', role: 'alz:Network-Management', mg: 'connectivity' }],
+  },
   overrides: {
     'landingzones/Deny-MgmtPorts-Internet': { notScopes: [{ kind: 'managementGroup', role: 'online' }] },
     'landingzones/Deny-IP-forwarding': { enforcementMode: 'DoNotEnforce' },
@@ -405,6 +411,35 @@ describe('locked parking lot in the export', () => {
     expect(a.managementGroupId).toBe('contoso-parkinglot');
     expect(a.policyDefinitionId).toBe('/providers/Microsoft.Management/managementGroups/contoso/providers/Microsoft.Authorization/policyDefinitions/Deny-ParkingLot-Resources');
     expect(generateIacFiles('bicep', m, { environment: 'prd', values: {} }).find((f) => f.name === 'README.md')!.content).toContain('The parking lot is locked');
+  });
+});
+
+describe('custom roles in the export', () => {
+  it('defines them at the top management group with unique names and their permissions', () => {
+    const m = model();
+    expect(m.roleDefinitions.map((r) => r.roleName)).toContain('Network-Management (contoso)');
+    for (const r of m.roleDefinitions) {
+      expect(r.permissions.length).toBeGreaterThan(0);
+      expect(r.permissions[0].actions.length + r.permissions[0].dataActions.length).toBeGreaterThan(0);
+    }
+    const files = generateIacFiles('terraform', m, { environment: 'prd', values: {} });
+    const data = JSON.parse(files.find((f) => f.name === 'design.auto.tfvars.json')!.content);
+    expect(data.role_definitions.length).toBe(5);
+    expect(model({ alzCustomRoles: false }).roleDefinitions).toEqual([]);
+  });
+
+  it('uses the custom role IDs for PIM', () => {
+    const m = model({
+      pim: {
+        enabled: true,
+        profile: 'auto',
+        roles: ['alz:Network-Management'],
+        eligibilities: [{ id: 'n', label: 'Network admins', role: 'alz:Network-Management', mg: 'connectivity' }],
+      },
+    });
+    const id = m.roleDefinitions.find((r) => r.roleName.startsWith('Network-Management'))!.name;
+    expect(m.pim!.roles).toEqual([{ name: 'Network-Management', roleDefinitionId: id, requireApproval: false }]);
+    expect(m.pim!.eligibilities[0]).toMatchObject({ roleDefinitionId: id, managementGroupId: 'contoso-connectivity' });
   });
 });
 

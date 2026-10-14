@@ -41,6 +41,11 @@ const GUARDRAILS: { key: BoolKey; label: string; help: string }[] = [
     help: 'Associate virtual networks with an existing DDoS protection plan. A plan costs about US$2,944 a month, so this is off by default.',
   },
   { key: 'cmk', label: 'Customer-managed keys', help: 'Enforce encryption with customer-managed keys (ALZ ships it in DoNotEnforce).' },
+  {
+    key: 'alzCustomRoles',
+    label: 'ALZ custom roles',
+    help: 'Define ALZ\'s custom roles (Application Owners, Network Management, Network Subnet Contributor, Security Operations, Subscription Owner) at the top management group; PIM can make groups eligible for them.',
+  },
   { key: 'sovereignty', label: 'Sovereignty baseline', help: 'Microsoft Cloud for Sovereignty global policies: allowed regions and Trusted Launch.' },
 ];
 

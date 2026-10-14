@@ -411,3 +411,37 @@ describe('exemption expiry', () => {
     expect(d.notes.some((n) => n.text.includes('"gone"') && n.text.includes('expired on 2026-09-30'))).toBe(true);
   });
 });
+
+describe('ALZ custom roles', () => {
+  it('defines the five ALZ roles with IDs fixed by the top management group and name', () => {
+    const d = design({});
+    expect(d.customRoles.map((r) => r.name)).toEqual([
+      'Application-Owners',
+      'Network-Management',
+      'Network-Subnet-Contributor',
+      'Security-Operations',
+      'Subscription-Owner',
+    ]);
+    expect(d.customRoles[1].roleDefinitionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(design({}).customRoles[1].roleDefinitionId).toBe(d.customRoles[1].roleDefinitionId);
+    expect(design({ prefix: 'fabrikam' }).customRoles[1].roleDefinitionId).not.toBe(d.customRoles[1].roleDefinitionId);
+    expect(design({ alzCustomRoles: false }).customRoles).toEqual([]);
+  });
+
+  it('lets PIM manage them, with approval in the high profile only', () => {
+    const pim = (frameworks: string[]) =>
+      design({
+        frameworks,
+        pim: {
+          enabled: true,
+          profile: 'auto',
+          roles: ['owner', 'alz:Network-Management'],
+          eligibilities: [{ id: 'n', label: 'Network admins', role: 'alz:Network-Management', mg: 'connectivity' }],
+        },
+      }).pim!;
+    const standard = pim([]);
+    expect(standard.roles.find((r) => r.key === 'alz:Network-Management')).toMatchObject({ name: 'Network-Management', requireApproval: false });
+    expect(standard.eligibilities.map((x) => x.id)).toEqual(['n']);
+    expect(pim(['fedramp-high']).roles.every((r) => r.requireApproval)).toBe(true);
+  });
+});

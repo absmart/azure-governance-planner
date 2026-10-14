@@ -73,6 +73,24 @@ export interface AlzLibrary {
     { parameters: Record<string, { value: unknown }>; nonComplianceMessages: NonComplianceMessage[]; definitionVersion?: string }
   >;
   defaults: { default_name: string; description: string; policy_assignments: { policy_assignment_name: string; parameter_names: string[] }[] }[];
+  /** ALZ custom roles by role name. */
+  roleDefinitions?: Record<string, { description: string; permissions: Partial<RolePermissions>[] }>;
+}
+
+export interface RolePermissions {
+  actions: string[];
+  notActions: string[];
+  dataActions: string[];
+  notDataActions: string[];
+}
+
+/** A custom role defined at the top management group. */
+export interface IacRoleDefinition {
+  /** The role definition's GUID. */
+  name: string;
+  roleName: string;
+  description: string;
+  permissions: RolePermissions[];
 }
 
 // --- Model -------------------------------------------------------------------
@@ -202,6 +220,8 @@ export interface IacModel {
   hierarchySettings: { defaultManagementGroupId: string; requireAuthorizationForGroupCreation: boolean } | null;
   /** Privileged Identity Management: role settings at every management group, and eligible assignments. */
   pim: IacPim | null;
+  /** ALZ custom roles, defined at the top management group. */
+  roleDefinitions: IacRoleDefinition[];
   /** "public" or "usgovernment" (the Terraform provider's environment). */
   cloud: 'public' | 'usgovernment';
   exemptions: IacExemption[];
@@ -633,6 +653,17 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     platformRoleAssignments,
     cloud: gov ? 'usgovernment' : 'public',
     pim,
+    roleDefinitions: design.customRoles.map((r) => ({
+      name: r.roleDefinitionId,
+      roleName: `${r.name} (${root.id})`,
+      description: r.description,
+      permissions: (library.roleDefinitions?.[r.name]?.permissions ?? []).map((p) => ({
+        actions: p.actions ?? [],
+        notActions: p.notActions ?? [],
+        dataActions: p.dataActions ?? [],
+        notDataActions: p.notDataActions ?? [],
+      })),
+    })),
     hierarchySettings: design.input.parkingLot
       ? {
           defaultManagementGroupId: mgIdOf('parkinglot'),
@@ -836,6 +867,18 @@ param hierarchySettings object = {}
 @description('PIM: { eligibleDurationDays, eligibilities: [{ name, roleDefinitionId, managementGroupId, input }] }. Role settings are set by scripts/set-pim-policies.sh.')
 param pim object = {}
 
+@description('Custom roles defined at the top management group: { name (GUID), roleName, description, permissions }.')
+param roleDefinitions array = []
+
+module customRoles 'modules/role-definitions.bicep' = if (!empty(roleDefinitions)) {
+  name: take('role-definitions-\${rootId}', 64)
+  scope: managementGroup(rootId)
+  params: {
+    roleDefinitions: roleDefinitions
+  }
+  dependsOn: [mgs]
+}
+
 @description('Platform resources to create for the policies to point at: { logAnalyticsWorkspace, userAssignedIdentity, dataCollectionRules, privateDnsResourceGroup }.')
 param platformResources object = {}
 
@@ -1030,7 +1073,8 @@ module pimEligibility 'modules/pim-eligibility.bicep' = [
       policyValues: values
       durationDays: pim.?eligibleDurationDays ?? 180
     }
-    dependsOn: [mgs]
+    // Eligibility for a custom role needs the role first.
+    dependsOn: [mgs, customRoles]
   }
 ]
 
@@ -1134,6 +1178,28 @@ resource policyExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-pr
     expiresOn: exemption.?expiresOn
   }
 }
+`;
+}
+
+export function toBicepRoleDefinitionsModule(): string {
+  return `${commentBlock('//', ['Custom roles, assignable at this management group and everything under it.', GENERATOR])}
+targetScope = 'managementGroup'
+
+@description('{ name (GUID), roleName, description, permissions: [{ actions, notActions, dataActions, notDataActions }] }')
+param roleDefinitions array
+
+resource role 'Microsoft.Authorization/roleDefinitions@2022-04-01' = [
+  for r in roleDefinitions: {
+    name: r.name
+    properties: {
+      roleName: r.roleName
+      description: r.description
+      type: 'CustomRole'
+      permissions: r.permissions
+      assignableScopes: [managementGroup().id]
+    }
+  }
+]
 `;
 }
 
@@ -1629,6 +1695,7 @@ param platformResources = loadJsonContent('lib/platform-resources.json')
 param policyExemptions = loadJsonContent('lib/policy-exemptions.json')
 param hierarchySettings = loadJsonContent('lib/hierarchy-settings.json')
 param pim = loadJsonContent('lib/pim.json')
+param roleDefinitions = loadJsonContent('lib/role-definitions.json')
 param platformRoleAssignments = loadJsonContent('lib/platform-role-assignments.json')
 param subscriptionPlacements = loadJsonContent('lib/subscription-placements.json')
 `;
@@ -1880,6 +1947,22 @@ variable "pim" {
     }))
   })
   default = null
+}
+
+variable "role_definitions" {
+  description = "Custom roles defined at the top management group and assignable under it. name is the role definition GUID."
+  type = list(object({
+    name        = string
+    role_name   = string
+    description = string
+    permissions = list(object({
+      actions          = list(string)
+      not_actions      = list(string)
+      data_actions     = list(string)
+      not_data_actions = list(string)
+    }))
+  }))
+  default = []
 }
 
 variable "log_analytics_retention_in_days" {
@@ -2299,6 +2382,27 @@ resource "azapi_resource" "hierarchy_settings" {
   }
 }
 
+# --- Custom roles ----------------------------------------------------------------
+
+resource "azurerm_role_definition" "alz" {
+  for_each           = { for r in var.role_definitions : r.name => r }
+  role_definition_id = each.key
+  name               = each.value.role_name
+  description        = each.value.description
+  scope              = local.management_group_ids[local.root_id]
+  assignable_scopes  = [local.management_group_ids[local.root_id]]
+
+  dynamic "permissions" {
+    for_each = each.value.permissions
+    content {
+      actions          = permissions.value.actions
+      not_actions      = permissions.value.not_actions
+      data_actions     = permissions.value.data_actions
+      not_data_actions = permissions.value.not_data_actions
+    }
+  }
+}
+
 # --- Privileged Identity Management ---------------------------------------------
 
 locals {
@@ -2369,6 +2473,9 @@ resource "azurerm_role_management_policy" "pim" {
       }
     }
   }
+
+  # Settings for a custom role need the role first.
+  depends_on = [azurerm_role_definition.alz]
 }
 
 # Groups that can activate a privileged role just in time.
@@ -2548,6 +2655,17 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
       expires_on: e.expiresOn ?? undefined,
     })),
     cloud_environment: model.cloud,
+    role_definitions: model.roleDefinitions.map((r) => ({
+      name: r.name,
+      role_name: r.roleName,
+      description: r.description,
+      permissions: r.permissions.map((p) => ({
+        actions: p.actions,
+        not_actions: p.notActions,
+        data_actions: p.dataActions,
+        not_data_actions: p.notDataActions,
+      })),
+    })),
     pim: model.pim
       ? {
           activation_maximum_duration: model.pim.activationMaximumDuration,
@@ -2743,7 +2861,7 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 ${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
     unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
-${manualSection(model, options)}${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
+${rolesSection(model)}${manualSection(model, options)}${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
 - **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
   their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
@@ -2776,6 +2894,14 @@ function platformSection(model: IacModel): string {
       };`,
   ].filter(Boolean);
   return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
+}
+
+function rolesSection(model: IacModel): string {
+  if (!model.roleDefinitions.length) return '';
+  return `- **Custom roles.** ALZ's custom roles are defined at \`${model.managementGroups[0].id}\` and assignable anywhere under it:
+  ${model.roleDefinitions.map((r) => `\`${r.roleName}\``).join(', ')}. Their IDs are fixed (UUID v5 of the top management group
+  and the role name), so redeploying updates them in place.
+`;
 }
 
 function manualSection(model: IacModel, options: ExportOptions): string {
@@ -2963,6 +3089,8 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'lib/policy-exemptions.json', content: json(model.exemptions), description: 'design' },
         { name: 'lib/hierarchy-settings.json', content: json(model.hierarchySettings ?? {}), description: 'design' },
         { name: 'lib/pim.json', content: json(model.pim ?? {}), description: 'design' },
+        { name: 'lib/role-definitions.json', content: json(model.roleDefinitions), description: 'design' },
+        { name: 'modules/role-definitions.bicep', content: toBicepRoleDefinitionsModule(), description: 'module' },
         ...(model.pim
           ? [
               { name: 'modules/pim-eligibility.bicep', content: toBicepPimModule(), description: 'module' },

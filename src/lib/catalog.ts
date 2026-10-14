@@ -109,6 +109,8 @@ export interface Catalog {
   alz: {
     /** ALZ library release the archetypes and assignments come from. */
     ref: string;
+    /** ALZ custom roles (permissions are in public/alz-library.json). */
+    roles: { name: string; description: string }[];
     managementGroups: AlzManagementGroup[];
     archetypes: Record<string, string[]>;
     assignments: Record<string, AlzAssignment>;

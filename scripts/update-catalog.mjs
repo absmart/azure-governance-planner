@@ -291,6 +291,8 @@ async function libraryFolder(folder) {
 const alzSets = await libraryFolder('policy_set_definitions');
 const alzDefinitions = await libraryFolder('policy_definitions');
 const alzDefaults = await get(`${ALZ_LIB}/alz_policy_default_values.json`);
+// Custom roles: the ALZ role files name the role in properties.roleName.
+const alzRoles = [...(await libraryFolder('role_definitions')).values()];
 const assignmentFiles = {};
 
 /** One member per policy, with every reference ID it is included under. */
@@ -421,6 +423,7 @@ const catalog = {
   nist: { families, controls: nistControls },
   alz: {
     ref: ALZ_REF,
+    roles: alzRoles.map((r) => ({ name: r.properties.roleName, description: r.properties.description })),
     managementGroups: architecture.management_groups.map((m) => ({
       id: m.id,
       displayName: m.display_name,
@@ -446,6 +449,7 @@ const library = {
   policyDefinitions: Object.fromEntries([...alzDefinitions].map(([n, d]) => [n, strip(d)])),
   policySetDefinitions: Object.fromEntries([...alzSets].map(([n, d]) => [n, strip(d)])),
   policyAssignments: assignmentFiles,
+  roleDefinitions: Object.fromEntries(alzRoles.map((r) => [r.properties.roleName, { permissions: r.properties.permissions, description: r.properties.description }])),
   defaults: alzDefaults.defaults,
 };
 mkdirSync(dirname(libraryOut), { recursive: true });

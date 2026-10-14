@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Design, DesignInput, MgRole } from '../lib/engine';
-import { DEFAULT_PIM, PIM_ROLES, PROFILE_SETTINGS, pimProfileFor, type PimEligibility, type PimInput, type PimRoleKey } from '../lib/pim';
+import { DEFAULT_PIM, PIM_ROLES, PROFILE_SETTINGS, pimProfileFor, pimRoles, type PimEligibility, type PimInput, type PimRoleKey } from '../lib/pim';
 
 const duration = (iso: string) =>
   iso.startsWith('PT') ? `${iso.slice(2, -1)} hour${iso.slice(2, -1) === '1' ? '' : 's'}` : `${iso.slice(1, -1)} days`;
@@ -19,6 +19,7 @@ export function PrivilegedAccess({ design, input, onChange }: { design: Design; 
   const [role, setRole] = useState<PimRoleKey>('owner');
   const [mg, setMg] = useState<MgRole>('root');
   const p = design.pim;
+  const roles = pimRoles(design.customRoles);
 
   const mgName = (role: MgRole) => design.mgs.find((m) => m.role === role)?.displayName ?? role;
   const addEligibility = () => {
@@ -71,7 +72,7 @@ export function PrivilegedAccess({ design, input, onChange }: { design: Design; 
                   [
                     ['Longest activation', (s) => duration(s.activationMaximumDuration)],
                     ['Activation requires', (s) => ['MFA', s.requireJustification && 'justification', s.requireTicket && 'ticket number'].filter(Boolean).join(', ')],
-                    ['Approval for', (s) => PIM_ROLES.filter((r) => s.approvalRoles.includes(r.key)).map((r) => r.name).join(', ')],
+                    ['Approval for', (s) => (s.approval === 'all' ? 'every role under PIM' : PIM_ROLES.filter((r) => r.grantsAccess).map((r) => r.name).join(', '))],
                     ['Eligible assignments expire after', (s) => duration(s.eligibleExpireAfter)],
                     ['Active assignments expire after', (s) => `${duration(s.activeExpireAfter)} (no permanent assignments)`],
                     ['Access reviews (Entra ID)', (s) => s.accessReview],
@@ -92,8 +93,8 @@ export function PrivilegedAccess({ design, input, onChange }: { design: Design; 
 
           <h3>Roles under PIM</h3>
           <div className="row">
-            {PIM_ROLES.map((r) => (
-              <label key={r.key} className="check" title={r.grantsAccess ? 'Can grant access to others' : undefined}>
+            {roles.map((r) => (
+              <label key={r.key} className="check" title={r.key.startsWith('alz:') ? 'ALZ custom role' : r.grantsAccess ? 'Can grant access to others' : undefined}>
                 <input
                   type="checkbox"
                   checked={pim.roles.includes(r.key)}
@@ -122,7 +123,7 @@ export function PrivilegedAccess({ design, input, onChange }: { design: Design; 
                   return (
                     <tr key={e.id} className={inDesign ? '' : 'muted'}>
                       <td>{e.label}</td>
-                      <td>{PIM_ROLES.find((r) => r.key === e.role)?.name}</td>
+                      <td>{roles.find((r) => r.key === e.role)?.name ?? e.role}</td>
                       <td>
                         {mgName(e.mg)}
                         {!inDesign && <span className="badge warn">not in the design</span>}
@@ -141,7 +142,7 @@ export function PrivilegedAccess({ design, input, onChange }: { design: Design; 
           <div className="row add-eligibility">
             <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Group, e.g. Network administrators" />
             <select value={role} onChange={(e) => setRole(e.target.value as PimRoleKey)}>
-              {PIM_ROLES.filter((r) => pim.roles.includes(r.key)).map((r) => (
+              {roles.filter((r) => pim.roles.includes(r.key)).map((r) => (
                 <option key={r.key} value={r.key}>
                   {r.name}
                 </option>

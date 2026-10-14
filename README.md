@@ -21,6 +21,8 @@ The **Privileged access** view puts Owner, User Access Administrator, Role Based
 | Active assignments expire after | 15 days | 15 days |
 | Access reviews (set up in Entra ID) | quarterly | monthly |
 
+ALZ's custom roles (Application Owners, Network Management, Network Subnet Contributor, Security Operations, Subscription Owner) are defined at the top management group (a Guardrails option, on by default) and can be added to PIM, so groups can be made eligible for them too; they need approval in the High profile.
+
 The view lists the controls this helps address (NIST 800-53 AC-2(6), AC-2(7), AC-6(5), AC-6(7), IA-2(1), AC-2(4); NIST 800-171; CMMC; MCSB PA-1, PA-2, PA-4; ISO 27001; PCI DSS; SOC 2). Terraform sets the role settings and eligible assignments with `azurerm_role_management_policy` and `azurerm_pim_eligible_role_assignment`; Bicep creates the eligible assignments and `scripts/set-pim-policies.sh` (az CLI and jq) sets the role settings. The groups' and the approver's Entra ID object IDs are per-environment values. PIM needs Entra ID P2 or Entra ID Governance.
 
 ## Saved designs

@@ -1255,3 +1255,12 @@ table.pim-settings td.current {
 .pim td.actions {
   text-align: right;
 }
+
+.assignment-filter {
+  margin-top: 10px;
+}
+
+.assignment-filter .filter-search {
+  flex: 1 1 200px;
+  max-width: 320px;
+}

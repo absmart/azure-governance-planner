@@ -52,11 +52,18 @@ function AssignmentRow({
   catalog,
   assignment: a,
   inheritedFrom,
+  inherited,
+  onOpenParent,
   editors,
 }: {
   catalog: Catalog;
   assignment: PlannedAssignment;
+  /** The "From" column: where the assignment is made. */
   inheritedFrom?: string;
+  /** Made at a parent, so read-only here. */
+  inherited?: boolean;
+  /** Open the parent the assignment is made at, to change it there. */
+  onOpenParent?: () => void;
   /** Override and exemption editors, for assignments at the selected group. */
   editors?: ReactNode;
 }) {
@@ -66,7 +73,7 @@ function AssignmentRow({
   const policies = all ? a.policies : a.policies.slice(0, POLICY_PREVIEW);
   return (
     <>
-      <tr className={`assignment ${open ? 'open' : ''} ${inheritedFrom ? 'inherited' : ''}`} onClick={() => setOpen(!open)}>
+      <tr className={`assignment ${open ? 'open' : ''} ${inherited ? 'inherited' : ''}`} onClick={() => setOpen(!open)}>
         <td>
           <span className="caret">{open ? '▾' : '▸'}</span>
           <code>{a.name}</code>
@@ -91,7 +98,24 @@ function AssignmentRow({
         <td>
           <EffectSummary members={a.policies} />
         </td>
-        {inheritedFrom !== undefined && <td className="muted">{inheritedFrom}</td>}
+        {inheritedFrom !== undefined && (
+          <td className="muted">
+            {onOpenParent ? (
+              <button
+                className="link"
+                title="Open this group to change or exempt the assignment"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenParent();
+                }}
+              >
+                {inheritedFrom}
+              </button>
+            ) : (
+              inheritedFrom
+            )}
+          </td>
+        )}
       </tr>
       {open && (
         <tr className="assignment-detail">
@@ -119,6 +143,15 @@ function AssignmentRow({
             </p>
             {a.parameters && <pre className="code params">{JSON.stringify(a.parameters, null, 2)}</pre>}
             {editors}
+            {inherited && onOpenParent && (
+              <p className="muted">
+                Inherited from {inheritedFrom}.{' '}
+                <button className="link" onClick={onOpenParent}>
+                  Open {inheritedFrom}
+                </button>{' '}
+                to override it, or exempt this group from it there.
+              </p>
+            )}
             <table className="members">
               <thead>
                 <tr>
@@ -165,15 +198,39 @@ export function Hierarchy({
   onChange: (input: DesignInput) => void;
 }) {
   const [selected, setSelected] = useState<MgRole>('root');
-  const [showInherited, setShowInherited] = useState(false);
+  /** Which assignments to list: assigned at this group, inherited from its parents, or both. */
+  const [scope, setScope] = useState<'here' | 'inherited' | 'all'>('here');
+  /** Inherited from one parent in particular, or any. */
+  const [from, setFrom] = useState<MgRole | 'any'>('any');
+  const [query, setQuery] = useState('');
   const mg = design.mgs.find((m) => m.role === selected) ?? design.mgs[0];
   const inherited = effectiveAssignments(design, mg.role).filter((x) => x.mg.role !== mg.role);
+  /** Every parent up to the top, nearest last (as effectiveAssignments orders them). */
+  const parents: PlannedMg[] = [];
+  for (let p = mg.parent; p; p = design.mgs.find((m) => m.role === p)?.parent ?? null) parents.unshift(design.mgs.find((m) => m.role === p)!);
   const enforcing = mg.assignments.filter(isEnforcing).length;
   const dne = mg.assignments.filter((a) => a.enforcementMode === 'DoNotEnforce').length;
 
+  // A parent chosen for another group may not be above this one; the top group has no parents.
+  const fromParent = from !== 'any' && parents.some((p) => p.role === from) ? from : 'any';
+  const listScope = parents.length ? scope : 'here';
+  const q = query.trim().toLowerCase();
+  const matches = (a: PlannedAssignment) =>
+    !q || a.name.toLowerCase().includes(q) || a.displayName.toLowerCase().includes(q) || a.definitionName.toLowerCase().includes(q);
+  const own = listScope === 'inherited' ? [] : mg.assignments.filter(matches);
+  const fromAbove =
+    listScope === 'here' ? [] : inherited.filter((x) => (fromParent === 'any' || x.mg.role === fromParent) && matches(x.assignment));
+  const showFrom = listScope !== 'here';
+  const filtered = !!q || (showFrom && fromParent !== 'any');
+
+  const select = (role: MgRole) => {
+    setSelected(role);
+    setQuery('');
+  };
+
   return (
     <div className="hierarchy">
-      <Tree design={design} selected={mg.role} onSelect={setSelected} />
+      <Tree design={design} selected={mg.role} onSelect={select} />
       <section className="card mg-detail">
         <header className="row">
           <h2>{mg.displayName}</h2>
@@ -183,7 +240,53 @@ export function Hierarchy({
         <p className="mg-summary">
           {mg.assignments.length} assignments here · {enforcing} enforcing · {dne} in DoNotEnforce · {inherited.length} inherited
         </p>
-        {mg.assignments.length ? (
+
+        <div className="row assignment-filter">
+          {parents.length > 0 && (
+            <div className="tabs" role="tablist" aria-label="Assignments to list">
+              {(
+                [
+                  ['here', `Assigned here (${mg.assignments.length})`],
+                  ['inherited', `Inherited (${inherited.length})`],
+                  ['all', `All effective (${mg.assignments.length + inherited.length})`],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  role="tab"
+                  aria-selected={listScope === value}
+                  className={listScope === value ? 'active' : ''}
+                  onClick={() => setScope(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {showFrom && (
+            <label>
+              From
+              <select value={fromParent} onChange={(e) => setFrom(e.target.value as MgRole | 'any')}>
+                <option value="any">Any parent</option>
+                {parents.map((p) => (
+                  <option key={p.role} value={p.role}>
+                    {p.displayName} ({inherited.filter((x) => x.mg.role === p.role).length})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <input
+            className="filter-search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by name"
+            aria-label="Filter assignments by name"
+          />
+          {filtered && <span className="muted">{own.length + fromAbove.length} shown</span>}
+        </div>
+
+        {own.length + fromAbove.length > 0 ? (
           <div className="table-scroll">
             <table>
               <thead>
@@ -194,14 +297,16 @@ export function Hierarchy({
                   <th>Mode</th>
                   <th className="num">Policies</th>
                   <th>Effect</th>
+                  {showFrom && <th>From</th>}
                 </tr>
               </thead>
               <tbody>
-                {mg.assignments.map((a) => (
+                {own.map((a) => (
                   <AssignmentRow
                     key={a.name}
                     catalog={catalog}
                     assignment={a}
+                    inheritedFrom={showFrom ? 'This group' : undefined}
                     editors={
                       <>
                         <OverrideEditor key={`o-${mg.role}-${a.name}`} design={design} mg={mg} assignment={a} input={input} onChange={onChange} />
@@ -210,11 +315,27 @@ export function Hierarchy({
                     }
                   />
                 ))}
+                {fromAbove.map(({ mg: parent, assignment }) => (
+                  <AssignmentRow
+                    key={`${parent.role}/${assignment.name}`}
+                    catalog={catalog}
+                    assignment={assignment}
+                    inheritedFrom={parent.displayName}
+                    inherited
+                    onOpenParent={() => select(parent.role)}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <p className="muted">No assignments at this level; everything here is inherited.</p>
+          <p className="muted">
+            {filtered
+              ? 'No assignments match the filter.'
+              : listScope === 'inherited'
+                ? 'Nothing is inherited here.'
+                : 'No assignments at this level; everything here is inherited.'}
+          </p>
         )}
         {mg.removed.length > 0 && (
           <p className="removed">
@@ -237,35 +358,6 @@ export function Hierarchy({
               </span>
             ))}
           </p>
-        )}
-        {inherited.length > 0 && (
-          <>
-            <button className="link more" onClick={() => setShowInherited(!showInherited)}>
-              {showInherited ? 'Hide' : 'Show'} {inherited.length} inherited assignments
-            </button>
-            {showInherited && (
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Assignment</th>
-                      <th>Definition</th>
-                      <th>Origin</th>
-                      <th>Mode</th>
-                      <th className="num">Policies</th>
-                      <th>Effect</th>
-                      <th>From</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {inherited.map(({ mg: from, assignment }) => (
-                      <AssignmentRow key={`${from.role}/${assignment.name}`} catalog={catalog} assignment={assignment} inheritedFrom={from.displayName} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </>
         )}
       </section>
     </div>

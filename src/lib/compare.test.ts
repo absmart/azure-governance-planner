@@ -3,7 +3,7 @@ import catalogJson from '../data/catalog.json';
 import type { Catalog } from './catalog';
 import { compareAssignments, compareMgs, comparePolicies, coverageDifferences, overlap, snapshotCoverage } from './compare';
 import { DEFAULT_INPUT, buildDesign } from './engine';
-import { catalogPolicy, definitionKey, designSnapshot, jsonValues, parseAzureImport } from './snapshot';
+import { catalogPolicy, definitionKey, designSnapshot, jsonValues, parseAzureImport, parseCsv } from './snapshot';
 
 const catalog = catalogJson as unknown as Catalog;
 const nist = catalog.frameworks.find((f) => f.key === 'nist-800-53-r5')!;
@@ -158,6 +158,43 @@ describe('Azure import', () => {
   it('keys ALZ definitions without their version suffix, and finds catalog policies whatever the case', () => {
     expect(definitionKey('/providers/x/policySetDefinitions/Enforce-Guardrails-KeyVault_20260203')).toBe('enforce-guardrails-keyvault');
     expect(catalogPolicy(catalog, 'deny-storage-sftp')).toBe(catalog.policies['Deny-Storage-SFTP']);
+  });
+});
+
+/** A Resource Graph Explorer CSV download of rows: properties as a JSON cell, every field quoted. */
+function toCsv(rows: { id: string; name: string; type: string; properties: unknown }[], options: { bom?: boolean; friendly?: boolean } = {}): string {
+  const friendly: Record<string, string> = {
+    'microsoft.authorization/policyassignments': 'Policy assignment',
+    'microsoft.management/managementgroups': 'Management group',
+    'microsoft.authorization/policysetdefinitions': 'Initiative definition',
+    'microsoft.authorization/policydefinitions': 'Policy definition',
+    'microsoft.authorization/policyexemptions': 'Policy exemption',
+  };
+  const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  const lines = rows.map((r) => [r.id, r.name, options.friendly ? friendly[r.type] : r.type, JSON.stringify(r.properties)].map(q).join(','));
+  return (options.bom ? '\uFEFF' : '') + ['"id","name","type","properties"', ...lines].join('\r\n') + '\r\n';
+}
+
+describe('Resource Graph Explorer CSV import', () => {
+  const pages = jsonValues(fixture()) as { data: { id: string; name: string; type: string; properties: unknown }[] }[];
+
+  it('reads the two CSV downloads into the same snapshot as the command output', () => {
+    const fromJson = parseAzureImport(fixture(), catalog, 'Tenant', new Date('2026-10-13T00:00:00Z'));
+    const fromCsv = parseAzureImport([toCsv(pages[0].data, { bom: true }), toCsv(pages[1].data)], catalog, 'Tenant', new Date('2026-10-13T00:00:00Z'));
+    expect(fromCsv).toEqual(fromJson);
+  });
+
+  it('maps friendly type names, when "Format results" was left on', () => {
+    const snapshot = parseAzureImport(toCsv([...pages[0].data, ...pages[1].data], { friendly: true }), catalog);
+    expect(snapshot.assignments.length).toBe(4);
+    expect(snapshot.mgs.some((m) => m.id === 'contoso-landingzones')).toBe(true);
+  });
+
+  it('parses quoted fields with commas, quotes and line breaks', () => {
+    expect(parseCsv('a,b\r\n"x, ""y""","line\nbreak"\n')).toEqual([
+      ['a', 'b'],
+      ['x, "y"', 'line\nbreak'],
+    ]);
   });
 });
 

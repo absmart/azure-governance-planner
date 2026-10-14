@@ -1,14 +1,38 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Catalog } from '../lib/catalog';
-import { AZURE_IMPORT_COMMANDS, parseAzureImport, type PolicySnapshot } from '../lib/snapshot';
+import { AZURE_IMPORT_COMMANDS, AZURE_IMPORT_QUERIES, parseAzureImport, type PolicySnapshot } from '../lib/snapshot';
+
+/** The import methods: the two commands, then Resource Graph Explorer in the portal. */
+const METHODS = [...AZURE_IMPORT_COMMANDS.map((c) => c.label), 'Resource Graph Explorer (portal)'];
+const PORTAL = METHODS.length - 1;
+
+function CopyBlock({ text, label }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div className="command">
+      {label && <span className="command-label">{label}</span>}
+      <pre className="code">{text}</pre>
+      <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+    </div>
+  );
+}
 
 /** Import a tenant's management groups, policy assignments and exemptions from an Azure Resource Graph export. */
 export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot: PolicySnapshot) => void; onClose: () => void }) {
   const { catalog, onClose } = props;
   const [tab, setTab] = useState(0);
   const [text, setText] = useState('');
+  const [files, setFiles] = useState<{ name: string; text: string }[]>([]);
   const [label, setLabel] = useState(`Azure ${new Date().toISOString().slice(0, 10)}`);
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -16,25 +40,16 @@ export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  const inputs = [...files.map((f) => f.text), ...(text.trim() ? [text] : [])];
   const result = useMemo(() => {
-    if (!text.trim()) return null;
+    if (!inputs.length) return null;
     try {
-      return { snapshot: parseAzureImport(text, catalog, label.trim() || 'Azure') };
+      return { snapshot: parseAzureImport(inputs, catalog, label.trim() || 'Azure') };
     } catch (e) {
       return { error: (e as Error).message };
     }
-  }, [text, catalog, label]);
+  }, [files, text, catalog, label]);
   const snapshot = result && 'snapshot' in result ? result.snapshot : null;
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(AZURE_IMPORT_COMMANDS[tab].command);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  };
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -46,21 +61,47 @@ export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot
           </button>
         </header>
         <p className="muted">
-          Run this with a signed-in Azure CLI (it only reads, through Azure Resource Graph): it saves the management groups, policy
-          assignments and exemptions you can see, with the definitions they use, to <code>azure-policy.json</code>. Then paste the
-          file's contents below or choose the file.
+          Reads, through Azure Resource Graph, the management groups, policy assignments and exemptions you can see, with the
+          definitions they use. Nothing is changed in Azure.
         </p>
         <div className="file-tabs" role="tablist">
-          {AZURE_IMPORT_COMMANDS.map((c, i) => (
-            <button key={c.label} role="tab" aria-selected={tab === i} className={tab === i ? 'active' : ''} onClick={() => setTab(i)}>
-              {c.label}
+          {METHODS.map((m, i) => (
+            <button key={m} role="tab" aria-selected={tab === i} className={tab === i ? 'active' : ''} onClick={() => setTab(i)}>
+              {m}
             </button>
           ))}
         </div>
-        <div className="command">
-          <pre className="code">{AZURE_IMPORT_COMMANDS[tab].command}</pre>
-          <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-        </div>
+
+        {tab === PORTAL ? (
+          <div className="portal-steps">
+            <ol>
+              <li>
+                Open{' '}
+                <a href="https://portal.azure.com/#view/HubsExtension/ArgQueryBlade" target="_blank" rel="noreferrer">
+                  Resource Graph Explorer
+                </a>{' '}
+                in the Azure portal (for Azure Government, in portal.azure.us), with a scope that covers your management groups.
+              </li>
+              <li>
+                Paste query 1 and select <strong>Run query</strong>. Turn <strong>Format results</strong> off, then{' '}
+                <strong>Download as CSV</strong>.
+              </li>
+              <li>Do the same with query 2. Resource Graph allows only one lookup of policy data per query, so there are two.</li>
+              <li>Choose both CSV files below.</li>
+            </ol>
+            {AZURE_IMPORT_QUERIES.map((q, i) => (
+              <CopyBlock key={i} text={q} label={`Query ${i + 1}: ${i === 0 ? 'assignments, exemptions, custom definitions, management groups' : 'the assigned built-in definitions'}`} />
+            ))}
+          </div>
+        ) : (
+          <>
+            <p className="muted">
+              Run this with a signed-in Azure CLI: it saves everything to <code>azure-policy.json</code>. Then choose that file or paste its
+              contents below.
+            </p>
+            <CopyBlock text={AZURE_IMPORT_COMMANDS[tab].command} />
+          </>
+        )}
 
         <div className="row import-input-row">
           <label className="field">
@@ -68,23 +109,37 @@ export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot
             <input value={label} onChange={(e) => setLabel(e.target.value)} />
           </label>
           <label className="file-pick">
-            Choose azure-policy.json
+            {tab === PORTAL ? 'Choose the CSV files' : 'Choose azure-policy.json'}
             <input
               type="file"
-              accept=".json,application/json,text/plain"
+              multiple
+              accept=".json,.csv,application/json,text/csv,text/plain"
               onChange={async (e) => {
-                const file = e.target.files?.[0];
-                if (file) setText(await file.text());
+                const chosen = [...(e.target.files ?? [])];
+                const read = await Promise.all(chosen.map(async (f) => ({ name: f.name, text: await f.text() })));
+                setFiles((current) => [...current.filter((c) => !read.some((r) => r.name === c.name)), ...read]);
                 e.target.value = '';
               }}
             />
           </label>
         </div>
+        {files.length > 0 && (
+          <p className="muted chosen-files">
+            {files.map((f) => (
+              <span key={f.name} className="removed-item">
+                <code>{f.name}</code>{' '}
+                <button className="link" onClick={() => setFiles(files.filter((x) => x.name !== f.name))}>
+                  Remove
+                </button>
+              </span>
+            ))}
+          </p>
+        )}
         <textarea
           className="import-input mono"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="…or paste the output here"
+          placeholder="…or paste the output (or CSV) here"
           spellCheck={false}
         />
 

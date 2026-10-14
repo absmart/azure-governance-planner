@@ -237,6 +237,84 @@ const get = (o: unknown, key: string): unknown => {
 };
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 
+/**
+ * Resource Graph Explorer's "Format results" shows friendly type names; map
+ * them back (the export works best with the option off).
+ */
+const FRIENDLY_TYPES: Record<string, string> = {
+  'management group': 'microsoft.management/managementgroups',
+  'management groups': 'microsoft.management/managementgroups',
+  'policy assignment': 'microsoft.authorization/policyassignments',
+  'policy assignments': 'microsoft.authorization/policyassignments',
+  'policy exemption': 'microsoft.authorization/policyexemptions',
+  'policy exemptions': 'microsoft.authorization/policyexemptions',
+  'policy definition': 'microsoft.authorization/policydefinitions',
+  'policy definitions': 'microsoft.authorization/policydefinitions',
+  'initiative definition': 'microsoft.authorization/policysetdefinitions',
+  'initiative definitions': 'microsoft.authorization/policysetdefinitions',
+  'policy set definition': 'microsoft.authorization/policysetdefinitions',
+  'policy set definitions': 'microsoft.authorization/policysetdefinitions',
+};
+
+/** RFC 4180 CSV: quoted fields may hold commas, quotes ("") and line breaks. */
+export function parseCsv(text: string): string[][] {
+  const out: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  const body = text.replace(/^\uFEFF/, '');
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quoted) {
+      if (c === '"') {
+        if (body[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else quoted = false;
+      } else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') {
+      row.push(field);
+      field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && body[i + 1] === '\n') i++;
+      row.push(field);
+      out.push(row);
+      row = [];
+      field = '';
+    } else field += c;
+  }
+  if (field || row.length) out.push([...row, field]);
+  return out.filter((r) => r.some((x) => x !== ''));
+}
+
+/** Rows from a Resource Graph Explorer CSV download (columns id, name, type, properties as JSON). */
+function csvRows(text: string): unknown[] {
+  const [header, ...body] = parseCsv(text);
+  if (!header) return [];
+  const col = (name: string) => header.findIndex((h) => h.trim().toLowerCase() === name);
+  const [id, name, type, properties] = ['id', 'name', 'type', 'properties'].map(col);
+  if (id < 0 || type < 0) return [];
+  return body.map((r) => {
+    let props: unknown = {};
+    try {
+      props = properties >= 0 && r[properties] ? JSON.parse(r[properties]) : {};
+    } catch {
+      props = {};
+    }
+    const rawType = (r[type] ?? '').trim();
+    return { id: r[id], name: name >= 0 ? r[name] : undefined, type: FRIENDLY_TYPES[rawType.toLowerCase()] ?? rawType, properties: props };
+  });
+}
+
+/** Whether a text is a CSV download rather than JSON. */
+const isCsv = (text: string) => /^\uFEFF?\s*"?id"?\s*,/i.test(text);
+
+/** Resource Graph values from pasted or uploaded text: JSON (command output) or CSV (Resource Graph Explorer). */
+function importValues(text: string): unknown[] {
+  return isCsv(text) ? csvRows(text) : jsonValues(text);
+}
+
 /** Rows from Resource Graph output: REST/az graph ({ data: [...] }), PowerShell (an array), or single rows. */
 function rows(values: unknown[]): Row[] {
   const out: Row[] = [];
@@ -281,9 +359,14 @@ function resolveEffect(
 const capital = (e: string) => (e ? e[0].toUpperCase() + e.slice(1) : e);
 
 /** Reads an Azure Resource Graph export (see AZURE_IMPORT_COMMANDS) into a snapshot. */
-export function parseAzureImport(text: string, catalog: Catalog, label = 'Azure', now = new Date()): PolicySnapshot {
-  const all = rows(jsonValues(text));
-  if (!all.length) throw new Error('No Azure Resource Graph rows found. Paste the output of the import command.');
+/**
+ * Reads Azure Resource Graph exports into a snapshot: the import commands'
+ * JSON, or Resource Graph Explorer CSV downloads (one text per file; both
+ * queries are needed).
+ */
+export function parseAzureImport(text: string | string[], catalog: Catalog, label = 'Azure', now = new Date()): PolicySnapshot {
+  const all = rows((Array.isArray(text) ? text : [text]).flatMap(importValues));
+  if (!all.length) throw new Error('No Azure Resource Graph rows found. Paste the output of the import command, or choose the Resource Graph Explorer CSV files.');
   const notes: string[] = [];
   const definitions = new Map(
     all.filter((r) => /\/policy(set)?definitions$/.test(r.type)).map((r) => [r.id.toLowerCase(), r]),
@@ -377,7 +460,7 @@ export function parseAzureImport(text: string, catalog: Catalog, label = 'Azure'
         ...(str(get(p, 'assignmentType')) === 'SystemHidden' || r.name.startsWith('sys.') ? { system: true } : {}),
       };
     });
-  if (unresolved) notes.push(`${unresolved} assignment${unresolved === 1 ? '' : 's'} use an initiative the export didn't include, so their policies are unknown. Re-run the full import query.`);
+  if (unresolved) notes.push(`${unresolved} assignment${unresolved === 1 ? '' : 's'} use an initiative the export didn't include, so their policies are unknown. Include query 2 (the assigned built-in definitions).`);
 
   const exemptions: SnapshotExemption[] = all
     .filter((r) => r.type === 'microsoft.authorization/policyexemptions')

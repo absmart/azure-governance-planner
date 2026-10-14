@@ -1489,3 +1489,25 @@ td.differs {
 .file-pick input[type='file'] {
   font-size: 12px;
 }
+
+.import-azure .portal-steps ol {
+  margin: 8px 0;
+  padding-left: 20px;
+  font-size: 13px;
+}
+
+.import-azure .command {
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.import-azure .command-label {
+  flex-basis: 100%;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.import-azure .chosen-files {
+  margin-top: 6px;
+}

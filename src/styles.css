@@ -9,6 +9,8 @@
   --enforced: #107c10;
   --audited: #0f6cbd;
   --manual: #c4851c;
+  --pim: #8764b8;
+  --excluded: #8a8f98;
   --none: #b8bec7;
   --alz: #5b5fc7;
   --framework: #0f7b6c;
@@ -34,6 +36,8 @@
     --enforced: #6ccb5f;
     --audited: #4ea1ff;
     --manual: #e0a545;
+    --pim: #a586d6;
+    --excluded: #6b717b;
     --none: #4a515c;
     --alz: #8b8ff0;
     --framework: #3fbfa8;
@@ -1268,4 +1272,39 @@ table.pim-settings td.current {
 .badge.expired {
   color: var(--error);
   background: var(--error-bg);
+}
+
+.badge.st-pim,
+.status-bar .st-pim,
+.dot.st-pim {
+  color: #fff;
+  background: var(--pim);
+}
+
+.badge.st-excluded,
+.status-bar .st-excluded,
+.dot.st-excluded {
+  color: #fff;
+  background: var(--excluded);
+}
+
+.txt-pim {
+  color: var(--pim);
+  font-weight: 600;
+}
+
+.txt-excluded {
+  color: var(--excluded);
+  font-weight: 600;
+}
+
+tr.control .exceptions {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.partial-count {
+  color: var(--warning);
+  font-weight: 600;
 }

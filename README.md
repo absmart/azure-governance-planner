@@ -8,6 +8,10 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 - a custom enforcement initiative of the framework's Deny-capable policies for landing zones (what-if or enforced, depending on the posture);
 - assignments for decisions such as allowed locations, required tags and confidential landing zones.
 
+## Control coverage
+
+The **Control coverage** view rates every in-scope control: **Enforced** or **Audited** by policy, **PIM** (no policy evaluates it, but Privileged Identity Management addresses it), **Manual only**, **Excluded (manual)** (with "Exclude manual-only controls") or **No policy**. Controls whose policies don't apply everywhere, because of an excluded scope or an exemption, are marked **partly** with the reasons, and each framework shows how many there are.
+
 ## Privileged access
 
 The **Privileged access** view puts Owner, User Access Administrator, Role Based Access Control Administrator and Contributor under Microsoft Entra **Privileged Identity Management**: named groups are eligible for a role at a management group and activate it just in time, and every management group gets the same role settings. The profile comes from the selected frameworks (High for FedRAMP High, NIST 800-53 High, CMMC and CJIS; Standard otherwise) or is chosen:
@@ -38,7 +42,7 @@ The view lists the controls this helps address (NIST 800-53 AC-2(6), AC-2(7), AC
 - the platform resources ALZ's DeployIfNotExists policies point at: in the management subscription, a resource group with the Log Analytics workspace, the data collection rules (VM Insights, Change Tracking, Defender for SQL) and the Azure Monitor Agent identity; in the connectivity subscription, the private DNS zone resource group with the commonly used private link zones, linked to the hub virtual networks you list (`private_dns_virtual_network_ids`) (storage, Container Apps, Azure SQL, Key Vault, Container Registry, App Service and Azure Monitor by default; more categories in the decisions panel). Remediation identities get their roles on those resource groups too;
 - a small values file per environment: the region, the subscriptions, the resource names (default `<app>-<environment>-<region>-<int>-<type>`, for example `management-prd-eus2-01-log`) and the remaining existing resources (security contact, and the DDoS plan if DDoS Network Protection is turned on; it's off by default because a plan costs about US$2,944 a month). The dialog flags any still empty or at the ALZ placeholder.
 
-**Exclude manual-only controls** (an export option) keeps the built-in regulatory compliance initiatives but turns off their manual-attestation policies with assignment overrides (effect Disabled, up to 50 reference IDs per override and 10 overrides per assignment, which fits every framework). Controls that only manual policies cover then aren't evaluated or listed as needing evidence; controls with automated policies keep them.
+**Exclude manual-only controls** (a decision next to the frameworks, also shown in the export dialog) keeps the built-in regulatory compliance initiatives but turns off their manual-attestation policies with assignment overrides (effect Disabled, up to 50 reference IDs per override and 10 overrides per assignment, which fits every framework). Controls that only manual policies cover then aren't evaluated or listed as needing evidence; controls with automated policies keep them.
 
 For **Azure Government**, the export uses Government private DNS zone names (and sets them on ALZ's private DNS policy), targets the `usgovernment` cloud in Terraform, and leaves out built-in policies Azure Government doesn't have, per AzAdvertizer's availability data. In the app, each assignment can be **overridden** (enforcement mode, removal, excluded scopes, parameters) and **exempted**, wholly or for chosen policies, at a management group, subscription or resource group; both are part of the export.
 

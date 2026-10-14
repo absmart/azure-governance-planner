@@ -29,6 +29,7 @@ const everything: Partial<DesignInput> = {
   cmk: true,
   sovereignty: true,
   local: true,
+  excludeManualControls: true,
   parkingLot: true,
   parkingLotGuardrails: 'locked',
   pim: {
@@ -493,7 +494,8 @@ describe('excluding manual-only controls', () => {
   });
 
   it('turns them off with effect overrides of up to 50 reference IDs each, only when asked', () => {
-    const files = (excludeManualControls: boolean) => generateIacFiles('bicep', m, { environment: 'prd', values: {}, excludeManualControls });
+    const files = (excludeManualControls: boolean) =>
+      generateIacFiles('bicep', model({ frameworks: ['nist-800-53-r5', 'mcsb'], excludeManualControls }), { environment: 'prd', values: {} });
     const assignment = (excludeManualControls: boolean) =>
       JSON.parse(files(excludeManualControls).find((f) => f.name === 'lib/policy-assignments.json')!.content).find(
         (a: { name: string }) => a.name === 'Audit-NIST-800-53-R5',
@@ -510,13 +512,11 @@ describe('excluding manual-only controls', () => {
     expect(overrides.flatMap((o) => o.selectors[0].in).sort()).toEqual([...nist().manualReferenceIds].sort());
     expect(assignment(false).manualReferenceIds).toBeUndefined();
 
-    const tf = JSON.parse(
-      generateIacFiles('terraform', m, { environment: 'prd', values: {}, excludeManualControls: true }).find((f) => f.name === 'design.auto.tfvars.json')!
-        .content,
-    );
+    const excluding = model({ frameworks: ['nist-800-53-r5', 'mcsb'], excludeManualControls: true });
+    const tf = JSON.parse(generateIacFiles('terraform', excluding, { environment: 'prd', values: {} }).find((f) => f.name === 'design.auto.tfvars.json')!.content);
     const tfNist = tf.policy_assignments.find((a: { name: string }) => a.name === 'Audit-NIST-800-53-R5');
     expect(tfNist.overrides.flatMap((o: { reference_ids: string[] }) => o.reference_ids).length).toBe(nist().manualReferenceIds.length);
-    expect(generateIacFiles('terraform', m, { environment: 'prd', values: {}, excludeManualControls: true }).find((f) => f.name === 'README.md')!.content).toContain(
+    expect(generateIacFiles('terraform', excluding, { environment: 'prd', values: {} }).find((f) => f.name === 'README.md')!.content).toContain(
       'Manual-only controls excluded',
     );
   });
@@ -549,7 +549,7 @@ describe('generateIacFiles', () => {
   const out = process.env.IAC_OUT_DIR;
   it.skipIf(!out)('writes sample files', () => {
     for (const format of ['bicep', 'terraform', 'terragrunt'] as const)
-      for (const f of generateIacFiles(format, m, { ...options, excludeManualControls: true })) {
+      for (const f of generateIacFiles(format, m, options)) {
         const path = join(out!, format, f.name);
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, f.content);

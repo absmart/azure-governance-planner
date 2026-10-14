@@ -95,6 +95,15 @@ describe('saved designs', () => {
     expect(design.exportSettings).toEqual(DEFAULT_EXPORT_SETTINGS);
   });
 
+  it('carries "Exclude manual-only controls" over from the export settings into the design', () => {
+    const [old] = parseBackup(JSON.stringify({ name: 'Old', input: { frameworks: ['nist-800-53-r5'], enforcement: 'alz' }, exportSettings: { excludeManualControls: true } }));
+    expect(old.input.excludeManualControls).toBe(true);
+    const [kept] = parseBackup(
+      JSON.stringify({ name: 'New', input: { frameworks: [], enforcement: 'alz', excludeManualControls: false }, exportSettings: { excludeManualControls: true } }),
+    );
+    expect(kept.input.excludeManualControls).toBe(false);
+  });
+
   it('rejects files that are not designs', () => {
     expect(() => parseBackup('not json')).toThrow(/not valid JSON/);
     expect(() => parseBackup('{"hello":1}')).toThrow(/doesn't contain decisions/);

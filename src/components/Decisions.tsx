@@ -181,6 +181,11 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
             {input.nistBaseline !== 'all' && check('nistPrivacy', 'Add privacy baseline')}
           </div>
         )}
+        {check(
+          'excludeManualControls',
+          'Exclude manual-only controls',
+          'Turn off the framework initiatives\' manual-attestation policies, so controls only they cover aren\'t evaluated or listed as needing evidence. Track that evidence outside Azure.',
+        )}
       </Section>
 
       <Section title="Enforcement posture">

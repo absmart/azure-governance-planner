@@ -82,7 +82,7 @@ export default function App() {
   const openDesign = (id: string) => {
     const saved = designs.find((d) => d.id === id);
     if (!saved) return;
-    setInput(migrateInput(saved.input));
+    setInput(migrateInput(saved.input, saved.exportSettings as { excludeManualControls?: boolean }));
     setExportSettings(migrateExportSettings(saved.exportSettings));
     setActiveDesignId(id);
   };
@@ -194,6 +194,8 @@ export default function App() {
           design={design}
           settings={exportSettings}
           onSettingsChange={setExportSettings}
+          excludeManualControls={input.excludeManualControls}
+          onExcludeManualControlsChange={(excludeManualControls) => setInput({ ...input, excludeManualControls })}
           onClose={() => setExporting(false)}
         />
       )}

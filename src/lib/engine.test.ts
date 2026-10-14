@@ -445,3 +445,44 @@ describe('ALZ custom roles', () => {
     expect(pim(['fedramp-high']).roles.every((r) => r.requireApproval)).toBe(true);
   });
 });
+
+describe('coverage reflects the design', () => {
+  const nist = (input: Partial<DesignInput> = {}) => design({ frameworks: ['nist-800-53-r5'], nistBaseline: 'all', ...input }).coverage[0];
+  const control = (cov: ReturnType<typeof nist>, id: string) => cov.families.flatMap((f) => f.controls).find((c) => c.id === id)!;
+
+  it('marks manual-only controls excluded when they are turned off', () => {
+    const before = nist();
+    const after = nist({ excludeManualControls: true });
+    expect(after.counts.excluded).toBe(before.counts.manual);
+    expect(after.counts.manual).toBe(0);
+    expect(after.counts.enforced + after.counts.audited).toBe(before.counts.enforced + before.counts.audited);
+  });
+
+  it('credits PIM for the controls it addresses that no policy evaluates', () => {
+    const withPim = nist();
+    const withoutPim = nist({ pim: { enabled: false, profile: 'auto', roles: [], eligibilities: [] } });
+    expect(withPim.counts.pim).toBeGreaterThan(0);
+    expect(withoutPim.counts.pim).toBe(0);
+    for (const id of ['AC-2(6)', 'AC-2(7)', 'AC-6(5)', 'AC-6(7)', 'IA-2(1)', 'AC-2(4)']) {
+      const c = control(withPim, id);
+      expect(c.pim, id).toBe(true);
+      if (c.automated.length === 0) expect(c.status, id).toBe('pim');
+    }
+  });
+
+  it('lists excluded scopes and exemptions as "partly" applied', () => {
+    const base = nist();
+    const target = base.families.flatMap((f) => f.controls).find((c) => c.enforcedBy.length && c.exceptions.length === 0)!;
+    const policy = target.automated[0];
+    const holder = design({ frameworks: ['nist-800-53-r5'], nistBaseline: 'all' })
+      .mgs.flatMap((m) => m.assignments.map((a) => ({ mg: m.role, a })))
+      .find(({ a }) => a.policies.some((p) => p.p === policy) && a.enforcementMode === 'Default')!;
+    const excluded = nist({ overrides: { [`${holder.mg}/${holder.a.name}`]: { notScopes: [{ kind: 'subscription', id: '1111' }] } } });
+    expect(control(excluded, target.id).exceptions).toContain(`${holder.a.name} excludes 1111`);
+    expect(excluded.partial).toBeGreaterThan(base.partial);
+    const exempted = nist({
+      exemptions: [{ id: 'x', mg: holder.mg, assignment: holder.a.name, scope: { kind: 'subscription', id: '2222' }, policies: [policy], category: 'Mitigated', reason: 'r' }],
+    });
+    expect(control(exempted, target.id).exceptions).toContain(`${holder.a.name} exempted at 2222 (mitigated)`);
+  });
+});

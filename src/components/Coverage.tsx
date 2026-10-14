@@ -33,12 +33,18 @@ function Family({ catalog, fw, family, filter }: { catalog: Catalog; fw: Framewo
             <td className="control-id">
               <code>{controlLabel(fw.key, c.id)}</code>
             </td>
-            <td colSpan={6}>
+            <td colSpan={STATUSES.length + 2}>
               {c.title && <span>{c.title} </span>}
               <span className="muted">
                 {c.automated.length} automated · {c.manual} manual
                 {c.enforcedBy.length > 0 && <> · enforced by {c.enforcedBy.join(', ')}</>}
+                {c.pim && c.status !== 'pim' && <> · also addressed by PIM</>}
               </span>
+              {c.exceptions.length > 0 && (
+                <div className="exceptions" title={c.exceptions.join('\n')}>
+                  <span className="badge warn">partly</span> {c.exceptions.join('; ')}
+                </div>
+              )}
               {openControl === c.id && c.automated.length > 0 && (
                 <ul className="control-policies">
                   {c.automated.map((p) => (
@@ -87,6 +93,12 @@ export function Coverage({ catalog, design }: { catalog: Catalog; design: Design
           Assigned at {scopeName} · {fw.automatedPolicies} automated and {fw.manualPolicies} manual policies ·{' '}
           {fw.inScope} controls in scope
           {fw.outOfBaseline > 0 && <> ({fw.outOfBaseline} outside the selected baseline)</>}
+          {fw.partial > 0 && (
+            <>
+              {' '}
+              · <span className="partial-count">{fw.partial} only partly applied</span> (excluded scopes or exemptions)
+            </>
+          )}
         </p>
         <StatusBar counts={fw.counts} />
         <div className="legend">

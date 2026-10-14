@@ -222,6 +222,8 @@ export interface IacModel {
   pim: IacPim | null;
   /** ALZ custom roles, defined at the top management group. */
   roleDefinitions: IacRoleDefinition[];
+  /** Turn off the initiatives' manual-attestation policies (the design's "Exclude manual-only controls"). */
+  excludeManualControls: boolean;
   /** "public" or "usgovernment" (the Terraform provider's environment). */
   cloud: 'public' | 'usgovernment';
   exemptions: IacExemption[];
@@ -310,11 +312,6 @@ export interface ExportOptions {
   values: Record<string, string>;
   /** Move the platform subscriptions into their management groups (default true). */
   placeSubscriptions?: boolean;
-  /**
-   * Turn off the manual-attestation policies in the initiatives (assignment
-   * overrides, effect Disabled), so controls with only manual policies drop out.
-   */
-  excludeManualControls?: boolean;
 }
 
 const MG_SCOPED_DEFINITION = /^\/providers\/Microsoft\.Management\/managementGroups\/[^/]+\/providers\/Microsoft\.Authorization\//i;
@@ -656,6 +653,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     platform,
     platformRoleAssignments,
     cloud: gov ? 'usgovernment' : 'public',
+    excludeManualControls: !!design.input.excludeManualControls,
     pim,
     roleDefinitions: design.customRoles.map((r) => ({
       name: r.roleDefinitionId,
@@ -2672,7 +2670,7 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
       scope: g.scope,
     })),
     policy_assignments: model.assignments.map((a) => ({
-      overrides: chunks(disabledReferenceIds(a, options), OVERRIDE_REFS).map((ids) => ({ value: 'Disabled', reference_ids: ids })),
+      overrides: chunks(disabledReferenceIds(a, model), OVERRIDE_REFS).map((ids) => ({ value: 'Disabled', reference_ids: ids })),
       management_group_id: a.managementGroupId,
       name: a.name,
       display_name: a.displayName,
@@ -2754,9 +2752,9 @@ function aliasLines(model: IacModel, options: ExportOptions): [string, string, s
 const OVERRIDE_REFS = 50;
 const MAX_OVERRIDES = 10;
 
-/** The reference IDs an assignment's overrides turn off, for these options. */
-export function disabledReferenceIds(a: IacAssignment, options: ExportOptions): string[] {
-  return options.excludeManualControls ? a.manualReferenceIds.slice(0, OVERRIDE_REFS * MAX_OVERRIDES) : [];
+/** The reference IDs an assignment's overrides turn off. */
+export function disabledReferenceIds(a: IacAssignment, model: IacModel): string[] {
+  return model.excludeManualControls ? a.manualReferenceIds.slice(0, OVERRIDE_REFS * MAX_OVERRIDES) : [];
 }
 
 /** How many manual policies the option turns off, and in how many assignments. */
@@ -2772,12 +2770,12 @@ export function manualPolicyCount(model: IacModel): { policies: number; assignme
 const chunks = <T>(list: T[], size: number): T[][] => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, i * size + size));
 
 /** Assignments as the files carry them: the manual reference IDs become effect overrides when the option is on. */
-function assignmentsFor(model: IacModel, options: ExportOptions) {
+function assignmentsFor(model: IacModel) {
   return model.assignments.map((a) => {
     const { manualReferenceIds, ...rest } = a;
     return {
       ...rest,
-      overrides: chunks(disabledReferenceIds(a, options), OVERRIDE_REFS).map((ids) => ({
+      overrides: chunks(disabledReferenceIds(a, model), OVERRIDE_REFS).map((ids) => ({
         kind: 'policyEffect',
         value: 'Disabled',
         selectors: [{ kind: 'policyDefinitionReferenceId', in: ids }],
@@ -2910,7 +2908,7 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 ${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
     unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
-${rolesSection(model)}${manualSection(model, options)}${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
+${rolesSection(model)}${manualSection(model)}${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
 - **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
   their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
@@ -2953,8 +2951,8 @@ function rolesSection(model: IacModel): string {
 `;
 }
 
-function manualSection(model: IacModel, options: ExportOptions): string {
-  if (!options.excludeManualControls) return '';
+function manualSection(model: IacModel): string {
+  if (!model.excludeManualControls) return '';
   const { policies, assignments, capped } = manualPolicyCount(model);
   if (!policies) return '';
   return `- **Manual-only controls excluded.** ${policies} manual-attestation policies in ${assignments} initiative assignment${assignments === 1 ? '' : 's'} are
@@ -3134,7 +3132,7 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'lib/platform-resources.json', content: json(platformFor(model, options)), description: 'design' },
         { name: 'lib/platform-role-assignments.json', content: json(model.platformRoleAssignments), description: 'design' },
         { name: 'lib/subscription-placements.json', content: json(placementsFor(model, options)), description: 'design' },
-        { name: 'lib/policy-assignments.json', content: json(assignmentsFor(model, options)), description: 'design' },
+        { name: 'lib/policy-assignments.json', content: json(assignmentsFor(model)), description: 'design' },
         { name: 'lib/policy-exemptions.json', content: json(model.exemptions), description: 'design' },
         { name: 'lib/hierarchy-settings.json', content: json(model.hierarchySettings ?? {}), description: 'design' },
         { name: 'lib/pim.json', content: json(model.pim ?? {}), description: 'design' },

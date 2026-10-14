@@ -34,9 +34,15 @@ export function newId(): string {
   }
 }
 
-/** Decisions from storage or a file, with fields added since then at their defaults. */
-export function migrateInput(input: Partial<DesignInput>): DesignInput {
-  return { ...DEFAULT_INPUT, ...clone(input) };
+/**
+ * Decisions from storage or a file, with fields added since then at their
+ * defaults. "Exclude manual-only controls" moved from the export settings into
+ * the design, so an old setting carries over.
+ */
+export function migrateInput(input: Partial<DesignInput>, exportSettings?: { excludeManualControls?: boolean }): DesignInput {
+  const migrated = { ...DEFAULT_INPUT, ...clone(input) };
+  if (input.excludeManualControls === undefined && exportSettings?.excludeManualControls) migrated.excludeManualControls = true;
+  return migrated;
 }
 
 export function migrateExportSettings(settings: Partial<ExportSettings> | undefined): ExportSettings {
@@ -113,7 +119,7 @@ export function parseBackup(text: string, now = new Date()): SavedDesign[] {
   const designs = candidates.map((c, i): SavedDesign => {
     const d = c as Partial<SavedDesign>;
     if (!isInput(d?.input)) throw new Error(`Design ${i + 1} doesn't contain decisions this app can open.`);
-    const input = migrateInput(d.input);
+    const input = migrateInput(d.input, d.exportSettings as { excludeManualControls?: boolean } | undefined);
     const name = (typeof d.name === 'string' && d.name.trim()) || input.name || 'Imported design';
     return {
       id: newId(),

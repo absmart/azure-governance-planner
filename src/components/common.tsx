@@ -17,18 +17,22 @@ export function Notes({ notes }: { notes: Note[] }) {
 export const STATUS_LABEL: Record<ControlStatus, string> = {
   enforced: 'Enforced',
   audited: 'Audited',
+  pim: 'PIM',
   manual: 'Manual only',
+  excluded: 'Excluded (manual)',
   none: 'No policy',
 };
 
 export const STATUS_HELP: Record<ControlStatus, string> = {
   enforced: 'At least one mapped policy is enforced (Deny, DeployIfNotExists, Modify) somewhere in the design.',
   audited: 'Mapped policies evaluate resources, but only report non-compliance.',
+  pim: 'No policy evaluates it, but Privileged Identity Management addresses it (just-in-time access, MFA, approval, expiry).',
   manual: 'Only manual attestation policies: evidence is uploaded in Defender for Cloud.',
+  excluded: 'Only manual attestation policies, turned off by "Exclude manual-only controls": track the evidence outside Azure.',
   none: 'No Azure Policy maps to this control; it is covered by process, not configuration.',
 };
 
-export const STATUSES: ControlStatus[] = ['enforced', 'audited', 'manual', 'none'];
+export const STATUSES: ControlStatus[] = ['enforced', 'audited', 'pim', 'manual', 'excluded', 'none'];
 
 /** Horizontal stacked bar of control statuses. */
 export function StatusBar({ counts }: { counts: Record<ControlStatus, number> }) {

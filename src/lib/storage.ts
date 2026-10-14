@@ -47,7 +47,7 @@ interface StoredInput {
 export function loadInput(): DesignInput {
   const stored = readJson<StoredInput>(STORAGE_KEYS.input);
   if (stored?.version !== 1) return DEFAULT_INPUT;
-  return migrateInput(stored.input);
+  return migrateInput(stored.input, readJson<{ excludeManualControls?: boolean }>(STORAGE_KEYS.export) ?? undefined);
 }
 
 export function loadExportSettings(): ExportSettings {
@@ -58,7 +58,11 @@ export function loadExportSettings(): ExportSettings {
 export function loadDesigns(): SavedDesign[] {
   const stored = readJson<SavedDesign[]>(STORAGE_KEYS.designs);
   if (!Array.isArray(stored)) return [];
-  return stored.map((d) => ({ ...d, input: migrateInput(d.input), exportSettings: migrateExportSettings(d.exportSettings) }));
+  return stored.map((d) => ({
+    ...d,
+    input: migrateInput(d.input, d.exportSettings as { excludeManualControls?: boolean }),
+    exportSettings: migrateExportSettings(d.exportSettings),
+  }));
 }
 
 export function saveInput(input: DesignInput): boolean {

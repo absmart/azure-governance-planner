@@ -41,6 +41,9 @@ export function ExportDialog(props: {
   /** Format, environment and values; kept by the app so they're saved with the design. */
   settings: ExportSettings;
   onSettingsChange: (settings: ExportSettings) => void;
+  /** The design's "Exclude manual-only controls", shown here too because it shapes the export. */
+  excludeManualControls: boolean;
+  onExcludeManualControlsChange: (exclude: boolean) => void;
   onClose: () => void;
 }) {
   const { catalog, design, settings, onSettingsChange: setSettings, onClose } = props;
@@ -162,8 +165,8 @@ export function ExportDialog(props: {
               <label className="check placement" title="Assignment overrides set the manual-attestation policies to Disabled; up to 500 per assignment.">
                 <input
                   type="checkbox"
-                  checked={!!settings.excludeManualControls}
-                  onChange={(e) => setSettings({ ...settings, excludeManualControls: e.target.checked })}
+                  checked={props.excludeManualControls}
+                  onChange={(e) => props.onExcludeManualControlsChange(e.target.checked)}
                 />
                 Exclude manual-only controls: turn off the {manualPolicyCount(model).policies} manual-attestation policies in the
                 framework initiatives, so controls only they cover aren't evaluated or listed as needing evidence

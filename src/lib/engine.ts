@@ -9,7 +9,7 @@
 
 import { BUILTIN_POLICY, canDeny, isAutomated, type Catalog, type Framework, type Member } from './catalog';
 import { familyOf } from './families';
-import { DEFAULT_PIM, buildPim, type PimDesign, type PimInput } from './pim';
+import { DEFAULT_PIM, PIM_CONTROLS, buildPim, type PimDesign, type PimInput } from './pim';
 import { uuidv5 } from './uuid';
 import { DEFAULT_PRIVATE_DNS_CATEGORIES } from './privateDns';
 
@@ -144,6 +144,11 @@ export interface DesignInput {
   pim: PimInput;
   /** ALZ's custom roles (Network Management, Security Operations, ...), defined at the top management group. */
   alzCustomRoles: boolean;
+  /**
+   * Turn off the framework initiatives' manual-attestation policies (assignment
+   * overrides in the export), so controls only they cover drop out of evaluation.
+   */
+  excludeManualControls: boolean;
 }
 
 export const DEFAULT_INPUT: DesignInput = {
@@ -180,6 +185,7 @@ export const DEFAULT_INPUT: DesignInput = {
   exemptions: [],
   pim: DEFAULT_PIM,
   alzCustomRoles: true,
+  excludeManualControls: false,
 };
 
 /** An ALZ custom role as the design defines it. */
@@ -250,7 +256,12 @@ export interface PlannedMg {
   removed: string[];
 }
 
-export type ControlStatus = 'enforced' | 'audited' | 'manual' | 'none';
+/**
+ * enforced / audited: by policy; pim: no policy evaluates it, but PIM addresses it;
+ * manual: only manual-attestation policies; excluded: only manual policies, turned off
+ * by "Exclude manual-only controls"; none: no policy.
+ */
+export type ControlStatus = 'enforced' | 'audited' | 'pim' | 'manual' | 'excluded' | 'none';
 
 export interface ControlCoverage {
   id: string;
@@ -262,6 +273,10 @@ export interface ControlCoverage {
   manual: number;
   /** Names of design assignments that enforce one of the control's policies. */
   enforcedBy: string[];
+  /** Where its policies don't apply: excluded scopes and exemptions ("partly"). */
+  exceptions: string[];
+  /** Privileged Identity Management helps address it. */
+  pim: boolean;
 }
 
 export interface FamilyCoverage {
@@ -279,6 +294,8 @@ export interface FrameworkCoverage {
   scope: MgRole;
   /** Controls in scope (after the NIST baseline filter). */
   inScope: number;
+  /** Controls whose policies don't apply everywhere (excluded scopes, exemptions). */
+  partial: number;
   outOfBaseline: number;
   counts: Record<ControlStatus, number>;
   families: FamilyCoverage[];
@@ -833,6 +850,22 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
         for (const m of a.policies)
           if (ENFORCING_EFFECTS.has(m.e)) enforcingPlacements.set(m.p, [...(enforcingPlacements.get(m.p) ?? []), a.name]);
 
+  // Where each policy doesn't apply: the excluded scopes and exemptions of the assignments that carry it.
+  const exceptionsByPolicy = new Map<string, Set<string>>();
+  for (const mg of mgs)
+    for (const a of mg.assignments) {
+      const excluded = a.notScopes?.length ? [`${a.name} excludes ${a.notScopes.map(scopeLabel).join(', ')}`] : [];
+      for (const m of a.policies) {
+        const exempt = a.exemptions
+          .filter((e) => !e.policies.length || e.policies.includes(m.p))
+          .map((e) => `${a.name} exempted at ${scopeLabel(e.scope)} (${e.category.toLowerCase()})`);
+        if (!excluded.length && !exempt.length) continue;
+        if (!exceptionsByPolicy.has(m.p)) exceptionsByPolicy.set(m.p, new Set());
+        for (const x of [...excluded, ...exempt]) exceptionsByPolicy.get(m.p)!.add(x);
+      }
+    }
+  const pimOn = (input.pim ?? DEFAULT_PIM).enabled;
+
   const assigned = new Set(mgs.flatMap((m) => m.assignments.map((a) => a.frameworkKey)).filter(Boolean));
   const coverage: FrameworkCoverage[] = frameworks.filter((f) => assigned.has(f.key)).map((f) => {
     const byControl = new Map<string, { automated: Set<string>; manual: number }>();
@@ -856,6 +889,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
     const families = new Map<string, FamilyCoverage>();
     const counts = emptyCounts();
     let outOfBaseline = 0;
+    const pimControls = new Set(pimOn ? (PIM_CONTROLS[f.key] ?? []).map((c) => c.id) : []);
     for (const [id, entry] of [...byControl].sort((a, b) => a[0].localeCompare(b[0], 'en', { numeric: true }))) {
       if (!controlInScope(f, id)) {
         outOfBaseline++;
@@ -863,18 +897,24 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
       }
       const automated = [...entry.automated];
       const enforcedBy = [...new Set(automated.flatMap((p) => enforcingPlacements.get(p) ?? []))];
+      const pim = pimControls.has(id);
       const status: ControlStatus = enforcedBy.length
         ? 'enforced'
         : automated.length
           ? 'audited'
-          : entry.manual
-            ? 'manual'
-            : 'none';
+          : pim
+            ? 'pim'
+            : entry.manual
+              ? input.excludeManualControls
+                ? 'excluded'
+                : 'manual'
+              : 'none';
+      const exceptions = [...new Set(automated.flatMap((p) => [...(exceptionsByPolicy.get(p) ?? [])]))];
       const fam = familyOf(f.key, id, catalog.nist.families);
       if (!families.has(fam.code)) families.set(fam.code, { code: fam.code, title: fam.title, controls: [], counts: emptyCounts() });
       const family = families.get(fam.code)!;
       const title = /^[A-Z]{2}-\d/.test(id) ? catalog.nist.controls[id]?.t : undefined;
-      family.controls.push({ id, title, status, automated, manual: entry.manual, enforcedBy });
+      family.controls.push({ id, title, status, automated, manual: entry.manual, enforcedBy, exceptions, pim });
       family.counts[status]++;
       counts[status]++;
     }
@@ -888,6 +928,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
       framework: f,
       scope,
       inScope: familyList.reduce((n, fam) => n + fam.controls.length, 0),
+      partial: familyList.reduce((n, fam) => n + fam.controls.filter((c) => c.exceptions.length).length, 0),
       outOfBaseline,
       counts,
       families: familyList,
@@ -1000,7 +1041,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
 }
 
 function emptyCounts(): Record<ControlStatus, number> {
-  return { enforced: 0, audited: 0, manual: 0, none: 0 };
+  return { enforced: 0, audited: 0, pim: 0, manual: 0, excluded: 0, none: 0 };
 }
 
 /** Assignments that apply at a management group: its own plus those inherited from ancestors. */

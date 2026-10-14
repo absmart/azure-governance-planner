@@ -112,6 +112,8 @@ export interface IacAssignment {
   roleDefinitionIds: string[];
   /** Resource IDs the assignment doesn't apply to. */
   notScopes: string[];
+  /** Reference IDs of the initiative's manual-attestation policies (effect Manual). */
+  manualReferenceIds: string[];
 }
 
 export interface IacPim {
@@ -286,6 +288,11 @@ export interface ExportOptions {
   values: Record<string, string>;
   /** Move the platform subscriptions into their management groups (default true). */
   placeSubscriptions?: boolean;
+  /**
+   * Turn off the manual-attestation policies in the initiatives (assignment
+   * overrides, effect Disabled), so controls with only manual policies drop out.
+   */
+  excludeManualControls?: boolean;
 }
 
 const MG_SCOPED_DEFINITION = /^\/providers\/Microsoft\.Management\/managementGroups\/[^/]+\/providers\/Microsoft\.Authorization\//i;
@@ -438,6 +445,10 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
         nonComplianceMessages,
         roleDefinitionIds: a.identity ? rolesFor(a, catalog, library) : [],
         notScopes: (a.notScopes ?? []).map(scopeId),
+        manualReferenceIds:
+          a.kind === 'initiative'
+            ? [...new Set(a.policies.filter((m) => (m.e || catalog.policies[m.p]?.e) === 'Manual').flatMap((m) => m.r ?? []))]
+            : [],
       });
       if (a.identity) useInput('location', a.name);
     }
@@ -1516,6 +1527,8 @@ resource assignments 'Microsoft.Authorization/policyAssignments@2025-01-01' = [
       parameters: union(a.parameters, toObject(items(a.inputs), p => p.key, p => { value: policyValues[p.value] }))
       nonComplianceMessages: a.nonComplianceMessages
       notScopes: a.?notScopes ?? []
+      // Effect overrides, e.g. Disabled for manual-attestation policies.
+      overrides: a.?overrides ?? []
     }
   }
 ]
@@ -1738,6 +1751,10 @@ variable "policy_assignments" {
     })), [])
     role_definition_ids = optional(list(string), [])
     not_scopes          = optional(list(string), [])
+    overrides = optional(list(object({
+      value         = string
+      reference_ids = list(string)
+    })), [])
   }))
   default = []
 }
@@ -2160,6 +2177,18 @@ resource "azurerm_management_group_policy_assignment" "this" {
     }
   }
 
+  # Effect overrides by policy reference ID, e.g. Disabled for manual-attestation policies.
+  dynamic "overrides" {
+    for_each = each.value.overrides
+    content {
+      value = overrides.value.value
+      selectors {
+        kind = "policyDefinitionReferenceId"
+        in   = overrides.value.reference_ids
+      }
+    }
+  }
+
   dynamic "non_compliance_message" {
     for_each = each.value.non_compliance_messages
     content {
@@ -2449,6 +2478,7 @@ export function toTerraformDesign(model: IacModel, options: ExportOptions): stri
       scope: g.scope,
     })),
     policy_assignments: model.assignments.map((a) => ({
+      overrides: chunks(disabledReferenceIds(a, options), OVERRIDE_REFS).map((ids) => ({ value: 'Disabled', reference_ids: ids })),
       management_group_id: a.managementGroupId,
       name: a.name,
       display_name: a.displayName,
@@ -2512,6 +2542,42 @@ function aliasLines(model: IacModel, options: ExportOptions): [string, string, s
   return Object.entries(model.aliases).map(([name, of]) => {
     const input = model.inputs.find((i) => i.name === of);
     return [name, input ? inputValue(input, model, options) : '', of];
+  });
+}
+
+/** Azure allows 10 overrides per assignment, each for up to 50 policy reference IDs. */
+const OVERRIDE_REFS = 50;
+const MAX_OVERRIDES = 10;
+
+/** The reference IDs an assignment's overrides turn off, for these options. */
+export function disabledReferenceIds(a: IacAssignment, options: ExportOptions): string[] {
+  return options.excludeManualControls ? a.manualReferenceIds.slice(0, OVERRIDE_REFS * MAX_OVERRIDES) : [];
+}
+
+/** How many manual policies the option turns off, and in how many assignments. */
+export function manualPolicyCount(model: IacModel): { policies: number; assignments: number; capped: string[] } {
+  const withManual = model.assignments.filter((a) => a.manualReferenceIds.length);
+  return {
+    policies: withManual.reduce((n, a) => n + Math.min(a.manualReferenceIds.length, OVERRIDE_REFS * MAX_OVERRIDES), 0),
+    assignments: withManual.length,
+    capped: withManual.filter((a) => a.manualReferenceIds.length > OVERRIDE_REFS * MAX_OVERRIDES).map((a) => a.name),
+  };
+}
+
+const chunks = <T>(list: T[], size: number): T[][] => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, i * size + size));
+
+/** Assignments as the files carry them: the manual reference IDs become effect overrides when the option is on. */
+function assignmentsFor(model: IacModel, options: ExportOptions) {
+  return model.assignments.map((a) => {
+    const { manualReferenceIds, ...rest } = a;
+    return {
+      ...rest,
+      overrides: chunks(disabledReferenceIds(a, options), OVERRIDE_REFS).map((ids) => ({
+        kind: 'policyEffect',
+        value: 'Disabled',
+        selectors: [{ kind: 'policyDefinitionReferenceId', in: ids }],
+      })),
+    };
   });
 }
 
@@ -2639,7 +2705,7 @@ function prerequisites(model: IacModel, options: ExportOptions): string {
 ${platformSection(model)}- **Values.** Set the subscriptions and resource IDs in the values file first.${
     unset.length ? ` Still empty or at the ALZ placeholder: ${unset.map((i) => `\`${i.name}\``).join(', ')}.` : ''
   }
-${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
+${manualSection(model, options)}${pimSection(model)}${hierarchySection(model)}${placementSection(model, options)}- **Remediation.** New assignments only apply to new and updated resources. Create remediation tasks
   for existing resources after the managed identities' role assignments have replicated.
 - **Cross-scope roles.** Remediation identities also get their policies' roles on the resource groups
   their parameters point at (${platformScopes(model)}), as the ALZ Terraform module grants them.
@@ -2672,6 +2738,16 @@ function platformSection(model: IacModel): string {
       };`,
   ].filter(Boolean);
   return lines.length ? `- **Platform resources.** The export creates:\n${lines.join('\n')}\n` : '';
+}
+
+function manualSection(model: IacModel, options: ExportOptions): string {
+  if (!options.excludeManualControls) return '';
+  const { policies, assignments, capped } = manualPolicyCount(model);
+  if (!policies) return '';
+  return `- **Manual-only controls excluded.** ${policies} manual-attestation policies in ${assignments} initiative assignment${assignments === 1 ? '' : 's'} are
+  turned off with effect overrides (Disabled), so controls they alone covered aren't evaluated or listed as needing evidence.
+  Controls with automated policies keep them.${capped.length ? ` Azure allows 500 overrides per assignment, so ${capped.join(', ')} keep some manual policies.` : ''}
+`;
 }
 
 function pimSection(model: IacModel): string {
@@ -2836,7 +2912,7 @@ export function generateIacFiles(format: IacFormat, model: IacModel, options: Ex
         { name: 'lib/platform-resources.json', content: json(platformFor(model, options)), description: 'design' },
         { name: 'lib/platform-role-assignments.json', content: json(model.platformRoleAssignments), description: 'design' },
         { name: 'lib/subscription-placements.json', content: json(placementsFor(model, options)), description: 'design' },
-        { name: 'lib/policy-assignments.json', content: json(model.assignments), description: 'design' },
+        { name: 'lib/policy-assignments.json', content: json(assignmentsFor(model, options)), description: 'design' },
         { name: 'lib/policy-exemptions.json', content: json(model.exemptions), description: 'design' },
         { name: 'lib/hierarchy-settings.json', content: json(model.hierarchySettings ?? {}), description: 'design' },
         { name: 'lib/pim.json', content: json(model.pim ?? {}), description: 'design' },

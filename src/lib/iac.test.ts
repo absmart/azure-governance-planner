@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import catalogJson from '../data/catalog.json';
 import type { Catalog } from './catalog';
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './engine';
-import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, unsetInputs } from './iac';
+import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, manualPolicyCount, unsetInputs } from './iac';
 import { crc32, createZip } from './zip';
 
 const catalog = catalogJson as unknown as Catalog;
@@ -418,6 +418,52 @@ describe('PIM in the export', () => {
   });
 });
 
+describe('excluding manual-only controls', () => {
+  const m = model({ frameworks: ['nist-800-53-r5', 'mcsb'] });
+  const nist = () => m.assignments.find((a) => a.name === 'Audit-NIST-800-53-R5')!;
+
+  it('records the manual-attestation policies of initiative assignments', () => {
+    const manual = catalog.frameworks.find((f) => f.key === 'nist-800-53-r5')!.refs.filter((r) => r.e === 'Manual');
+    expect(nist().manualReferenceIds.length).toBe(manual.length);
+    expect(nist().manualReferenceIds).toContain(manual[0].r);
+    expect(manualPolicyCount(m)).toEqual({ policies: manual.length, assignments: 1, capped: [] });
+  });
+
+  it('turns them off with effect overrides of up to 50 reference IDs each, only when asked', () => {
+    const files = (excludeManualControls: boolean) => generateIacFiles('bicep', m, { environment: 'prd', values: {}, excludeManualControls });
+    const assignment = (excludeManualControls: boolean) =>
+      JSON.parse(files(excludeManualControls).find((f) => f.name === 'lib/policy-assignments.json')!.content).find(
+        (a: { name: string }) => a.name === 'Audit-NIST-800-53-R5',
+      );
+    expect(assignment(false).overrides).toEqual([]);
+    const overrides = assignment(true).overrides as { value: string; selectors: { kind: string; in: string[] }[] }[];
+    expect(overrides.length).toBe(Math.ceil(nist().manualReferenceIds.length / 50));
+    expect(overrides.length).toBeLessThanOrEqual(10);
+    for (const o of overrides) {
+      expect(o.value).toBe('Disabled');
+      expect(o.selectors[0].kind).toBe('policyDefinitionReferenceId');
+      expect(o.selectors[0].in.length).toBeLessThanOrEqual(50);
+    }
+    expect(overrides.flatMap((o) => o.selectors[0].in).sort()).toEqual([...nist().manualReferenceIds].sort());
+    expect(assignment(false).manualReferenceIds).toBeUndefined();
+
+    const tf = JSON.parse(
+      generateIacFiles('terraform', m, { environment: 'prd', values: {}, excludeManualControls: true }).find((f) => f.name === 'design.auto.tfvars.json')!
+        .content,
+    );
+    const tfNist = tf.policy_assignments.find((a: { name: string }) => a.name === 'Audit-NIST-800-53-R5');
+    expect(tfNist.overrides.flatMap((o: { reference_ids: string[] }) => o.reference_ids).length).toBe(nist().manualReferenceIds.length);
+    expect(generateIacFiles('terraform', m, { environment: 'prd', values: {}, excludeManualControls: true }).find((f) => f.name === 'README.md')!.content).toContain(
+      'Manual-only controls excluded',
+    );
+  });
+
+  it('fits every framework within the 500 overrides an assignment allows', () => {
+    const all = model({ frameworks: catalog.frameworks.map((f) => f.key) });
+    expect(manualPolicyCount(all).capped).toEqual([]);
+  });
+});
+
 describe('generateIacFiles', () => {
   const m = model(everything);
   const options = { environment: 'prod', values: {} };
@@ -440,7 +486,7 @@ describe('generateIacFiles', () => {
   const out = process.env.IAC_OUT_DIR;
   it.skipIf(!out)('writes sample files', () => {
     for (const format of ['bicep', 'terraform', 'terragrunt'] as const)
-      for (const f of generateIacFiles(format, m, options)) {
+      for (const f of generateIacFiles(format, m, { ...options, excludeManualControls: true })) {
         const path = join(out!, format, f.name);
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, f.content);

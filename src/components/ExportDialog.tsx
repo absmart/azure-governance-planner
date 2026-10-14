@@ -10,6 +10,7 @@ import {
   type IacFormat,
   buildIacModel,
   generateIacFiles,
+  manualPolicyCount,
   placeholderOf,
   platformSummary,
   roleAssignmentCount,
@@ -156,6 +157,18 @@ export function ExportDialog(props: {
                 ))}
               </div>
             </details>
+
+            {manualPolicyCount(model).policies > 0 && (
+              <label className="check placement" title="Assignment overrides set the manual-attestation policies to Disabled; up to 500 per assignment.">
+                <input
+                  type="checkbox"
+                  checked={!!settings.excludeManualControls}
+                  onChange={(e) => setSettings({ ...settings, excludeManualControls: e.target.checked })}
+                />
+                Exclude manual-only controls: turn off the {manualPolicyCount(model).policies} manual-attestation policies in the
+                framework initiatives, so controls only they cover aren't evaluated or listed as needing evidence
+              </label>
+            )}
 
             {model.subscriptionPlacements.length > 0 && (
               <label className="check placement">

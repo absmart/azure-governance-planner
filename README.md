@@ -31,6 +31,17 @@ ALZ's custom roles (Application Owners, Network Management, Network Subnet Contr
 
 The view lists the controls this helps address (NIST 800-53 AC-2(6), AC-2(7), AC-6(5), AC-6(7), IA-2(1), AC-2(4); NIST 800-171; CMMC; MCSB PA-1, PA-2, PA-4; ISO 27001; PCI DSS; SOC 2). Terraform sets the role settings and eligible assignments with `azurerm_role_management_policy` and `azurerm_pim_eligible_role_assignment`; Bicep creates the eligible assignments and `scripts/set-pim-policies.sh` (az CLI and jq) sets the role settings. The groups' and the approver's Entra ID object IDs are per-environment values. PIM needs Entra ID P2 or Entra ID Governance.
 
+## Compare, and import from Azure
+
+The **Compare** view puts any two of these side by side: the current design, a saved design, or a tenant imported from Azure.
+
+- **Import from Azure** gives a read-only Azure Resource Graph command (bash or PowerShell, through `az rest`, so no CLI extension is needed) that saves the management groups, policy assignments and exemptions you can see, with the custom definitions and the assigned built-in ones, to `azure-policy.json`. Paste or upload it; each assignment's policies and effects are resolved from its initiative, parameters and overrides.
+- **Policies in effect** shows a Venn diagram of the policies each side evaluates (or only enforces), and lists those only in A, in both, only in B, or enforced on one side only.
+- **Framework coverage** rates each side by its policies alone against any framework (enforced, audited, manual only, not assigned, no policy) and lists the controls rated differently.
+- **Assignments** are matched by definition (built-in ID, or custom name without an ALZ version suffix) and show where scope or enforcement differs; **management groups** are matched by ID.
+
+Microsoft's hidden system assignments (`sys.*`) are left out unless you ask for them.
+
 ## Saved designs
 
 **Designs** keeps named designs in the browser: save (Ctrl+S), save as new, open, duplicate, rename and delete. A design holds every decision, including overrides and exemptions, plus the IaC export settings (format, environment and values). Export one or all of them to a `.json` file to back them up, share them or move them to another machine, and import them again from the same dialog.

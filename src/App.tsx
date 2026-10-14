@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Notes } from './components/common';
+import { CompareView } from './components/CompareView';
 import { Coverage } from './components/Coverage';
 import { Decisions } from './components/Decisions';
 import { DesignsDialog } from './components/DesignsDialog';
@@ -22,6 +23,7 @@ import {
 } from './lib/designs';
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './lib/engine';
 import type { ExportSettings } from './lib/iac';
+import type { PolicySnapshot } from './lib/snapshot';
 import { STORAGE_KEYS, loadDesigns, loadExportSettings, loadInput, readJson, saveInput, writeJson } from './lib/storage';
 import { downloadFile } from './lib/download';
 import { buildReport, reportFileName } from './lib/report';
@@ -29,13 +31,14 @@ import { createXlsx } from './lib/xlsx';
 
 const catalog = catalogJson as unknown as Catalog;
 
-type View = 'hierarchy' | 'coverage' | 'policies' | 'pim';
+type View = 'hierarchy' | 'coverage' | 'policies' | 'pim' | 'compare';
 
 const VIEWS: { value: View; label: string }[] = [
   { value: 'hierarchy', label: 'Management groups' },
   { value: 'coverage', label: 'Control coverage' },
   { value: 'policies', label: 'Policies' },
   { value: 'pim', label: 'Privileged access' },
+  { value: 'compare', label: 'Compare' },
 ];
 
 export default function App() {
@@ -45,6 +48,10 @@ export default function App() {
   const [storageOk, setStorageOk] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [showDesigns, setShowDesigns] = useState(false);
+  const [azureImports, setAzureImports] = useState<PolicySnapshot[]>(() => readJson<PolicySnapshot[]>(STORAGE_KEYS.azureImports) ?? []);
+  useEffect(() => {
+    setStorageOk(writeJson(STORAGE_KEYS.azureImports, azureImports));
+  }, [azureImports]);
   const design = useMemo(() => buildDesign(catalog, input), [input]);
   const warnings = design.notes.filter((n) => n.level === 'warning').length;
 
@@ -197,6 +204,16 @@ export default function App() {
           {view === 'coverage' && <Coverage catalog={catalog} design={design} />}
           {view === 'policies' && <Policies catalog={catalog} design={design} />}
           {view === 'pim' && <PrivilegedAccess design={design} input={input} onChange={setInput} />}
+          {view === 'compare' && (
+            <CompareView
+              catalog={catalog}
+              design={design}
+              input={input}
+              designs={designs}
+              imports={azureImports}
+              onImportsChange={setAzureImports}
+            />
+          )}
           <footer className="muted">
             Policy data from the Azure Policy built-ins, the Azure Landing Zones library, AzAdvertizer and NIST OSCAL, snapshot{' '}
             {catalog.generated.slice(0, 10)}. Regenerate with <code>npm run update-catalog</code>.

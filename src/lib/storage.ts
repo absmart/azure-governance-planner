@@ -16,6 +16,8 @@ export const STORAGE_KEYS = {
   designs: 'azure-governance-planner:designs',
   /** Id of the saved design the current decisions were opened from or saved as. */
   activeDesign: 'azure-governance-planner:active-design',
+  /** Policy snapshots imported from Azure, for the Compare view. */
+  azureImports: 'azure-governance-planner:azure-imports',
 } as const;
 
 export function readJson<T>(key: string): T | null {

@@ -1308,3 +1308,184 @@ tr.control .exceptions {
   color: var(--warning);
   font-weight: 600;
 }
+
+/* Compare */
+
+.compare {
+  display: grid;
+  gap: 16px;
+}
+
+.compare-sides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px 16px;
+  align-items: end;
+  margin-top: 10px;
+}
+
+.compare-sides label.field {
+  display: grid;
+  gap: 2px;
+}
+
+.compare-sides select {
+  width: 100%;
+}
+
+.compare-sides label.check {
+  color: var(--text);
+}
+
+.compare .imports {
+  margin-top: 8px;
+}
+
+svg.venn {
+  display: block;
+  width: 100%;
+  max-width: 460px;
+  margin: 8px auto 0;
+}
+
+svg.venn circle {
+  stroke-width: 2;
+  cursor: pointer;
+}
+
+svg.venn .venn-a {
+  fill: color-mix(in srgb, var(--accent) 16%, transparent);
+  stroke: var(--accent);
+}
+
+svg.venn .venn-b {
+  fill: color-mix(in srgb, var(--framework) 16%, transparent);
+  stroke: var(--framework);
+}
+
+svg.venn circle.selected {
+  stroke-width: 4;
+}
+
+svg.venn .venn-region {
+  cursor: pointer;
+}
+
+svg.venn .venn-count {
+  font-size: 22px;
+  font-weight: 700;
+  fill: var(--text);
+}
+
+svg.venn .venn-region.selected .venn-count {
+  fill: var(--accent);
+}
+
+svg.venn .venn-label,
+svg.venn .venn-title {
+  font-size: 12px;
+  fill: var(--muted);
+}
+
+svg.venn .venn-title {
+  font-weight: 600;
+}
+
+.section-label {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.diff-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.cmp-enforced {
+  color: var(--enforced);
+  font-weight: 600;
+}
+
+.cmp-audited {
+  color: var(--audited);
+  font-weight: 600;
+}
+
+.cmp-manual {
+  color: var(--manual);
+}
+
+.cmp-missing {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.cmp-none {
+  color: var(--muted);
+}
+
+td.differs {
+  color: var(--warning);
+}
+
+.mg-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
+}
+
+.mg-compare ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.dialog.import-azure {
+  overflow-y: auto;
+}
+
+.import-azure .command {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.import-azure .command .code {
+  flex: 1;
+  max-height: 180px;
+  margin-top: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+}
+
+.import-azure .import-input-row {
+  margin-top: 10px;
+  align-items: end;
+}
+
+.import-azure .import-input-row label.field {
+  display: grid;
+  gap: 2px;
+}
+
+.import-azure textarea.import-input {
+  width: 100%;
+  min-height: 120px;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.file-pick input[type='file'] {
+  font-size: 12px;
+}

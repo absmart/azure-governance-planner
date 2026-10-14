@@ -126,6 +126,8 @@ export interface DesignInput {
   allowedLocations: string[];
   requiredTags: string[];
   defender: boolean;
+  /** Defender for Cloud plans ALZ's Deploy-MDFC-Config enables (keys of DEFENDER_PLANS). */
+  defenderPlans: string[];
   monitoring: boolean;
   backup: boolean;
   /** Enforce customer-managed keys (ALZ Enforce-Encrypt-CMK0). */
@@ -151,6 +153,28 @@ export interface DesignInput {
   excludeManualControls: boolean;
 }
 
+/**
+ * Defender for Cloud plans, by the Deploy-MDFC-Config initiative parameter
+ * that turns each on (enableAscFor<key>). ALZ's own assignment switches most
+ * of them to Disabled; the design sets every one explicitly.
+ */
+export const DEFENDER_PLANS: { key: string; label: string; help: string; default: boolean }[] = [
+  { key: 'Servers', label: 'Servers', help: 'Defender for Servers on VMs and Arc machines.', default: true },
+  { key: 'ServersVulnerabilityAssessments', label: 'Servers vulnerability assessment', help: 'Built-in vulnerability scanning on servers.', default: true },
+  { key: 'Sql', label: 'Azure SQL', help: 'Azure SQL Database and Managed Instance.', default: true },
+  { key: 'SqlOnVm', label: 'SQL servers on machines', help: 'SQL Server on VMs and Arc.', default: true },
+  { key: 'OssDb', label: 'Open-source databases', help: 'PostgreSQL, MySQL and MariaDB.', default: true },
+  { key: 'CosmosDbs', label: 'Cosmos DB', help: 'Azure Cosmos DB accounts.', default: true },
+  { key: 'AppServices', label: 'App Service', help: 'Web apps and functions on App Service.', default: true },
+  { key: 'Storage', label: 'Storage', help: 'Storage accounts (Defender for Storage).', default: true },
+  { key: 'Containers', label: 'Containers', help: 'AKS, container registries and the Azure Policy add-on for Kubernetes.', default: true },
+  { key: 'KeyVault', label: 'Key Vault', help: 'Key vaults.', default: true },
+  { key: 'Arm', label: 'Resource Manager', help: 'Control-plane operations on subscriptions.', default: true },
+  { key: 'Cspm', label: 'Defender CSPM', help: 'Premium posture management (attack paths, agentless scanning). Billed per resource, so off by default.', default: false },
+  { key: 'AI', label: 'AI services', help: 'Threat protection for Azure OpenAI and AI services. Off by default; turn on where AI workloads run.', default: false },
+];
+export const DEFAULT_DEFENDER_PLANS = DEFENDER_PLANS.filter((p) => p.default).map((p) => p.key);
+
 export const DEFAULT_INPUT: DesignInput = {
   name: 'Contoso governance',
   rootName: 'Contoso',
@@ -174,6 +198,7 @@ export const DEFAULT_INPUT: DesignInput = {
   allowedLocations: ['eastus2', 'centralus'],
   requiredTags: ['CostCenter', 'Environment'],
   defender: true,
+  defenderPlans: DEFAULT_DEFENDER_PLANS,
   monitoring: true,
   backup: true,
   cmk: false,
@@ -332,6 +357,14 @@ export interface Design {
     enforcingAssignments: number;
     frameworkPolicies: number;
   };
+}
+
+const DEFENDER_ASSIGNMENT = 'Deploy-MDFC-Config-H224';
+
+/** Members whose effect is wired to a parameter the assignment sets take that value. */
+function applyEffectParameters(policies: Member[], parameters: Record<string, unknown> | undefined): Member[] {
+  if (!parameters) return policies;
+  return policies.map((m) => (m.ep && typeof parameters[m.ep] === 'string' ? { ...m, e: parameters[m.ep] as string } : m));
 }
 
 /** Effects that change or block resources rather than only reporting. */
@@ -524,6 +557,17 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
           enforcementMode = 'DoNotEnforce';
           change = 'Set to DoNotEnforce by the audit-first posture: non-compliance is reported, nothing is blocked.';
         }
+        let parameters: Record<string, unknown> | undefined;
+        if (name === DEFENDER_ASSIGNMENT) {
+          const plans = new Set(input.defenderPlans ?? DEFAULT_DEFENDER_PLANS);
+          parameters = Object.fromEntries(
+            DEFENDER_PLANS.map((p) => [`enableAscFor${p.key}`, plans.has(p.key) ? 'DeployIfNotExists' : 'Disabled']),
+          );
+          const on = DEFENDER_PLANS.filter((p) => plans.has(p.key));
+          change = on.length
+            ? `Enables Defender plans: ${on.map((p) => p.label).join(', ')} (ALZ ships most of them Disabled).`
+            : 'No Defender plans enabled; security contacts and continuous export only.';
+        }
         mg.assignments.push({
           name,
           displayName: a.displayName,
@@ -535,9 +579,10 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
           definitionSource: a.source,
           enforcementMode,
           identity: a.identity,
-          policies: a.policies.filter(available),
+          policies: applyEffectParameters(a.policies.filter(available), parameters),
           rationale: `ALZ ${archetype.replace('_', ' ')} archetype.`,
           change,
+          ...(parameters ? { parameters } : {}),
           exemptions: [],
         });
       }
@@ -805,6 +850,7 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
       }
       if (o.parameters && Object.keys(o.parameters).length) {
         a.parameters = { ...(a.parameters ?? {}), ...o.parameters };
+        a.policies = applyEffectParameters(a.policies, a.parameters);
         changes.push(`parameters ${Object.keys(o.parameters).join(', ')}`);
       }
       if (changes.length) {

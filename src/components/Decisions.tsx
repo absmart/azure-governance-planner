@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { portalInitiativeUrl, type Catalog } from '../lib/catalog';
 import { PRIVATE_DNS_CATEGORIES } from '../lib/privateDns';
-import { DEFAULT_INPUT, GOV_LOCATIONS, type Baseline, type DesignInput, type Enforcement, type MgRole } from '../lib/engine';
+import { DEFAULT_INPUT, DEFENDER_PLANS, GOV_LOCATIONS, type Baseline, type DesignInput, type Enforcement, type MgRole } from '../lib/engine';
 
 type BoolKey = { [K in keyof DesignInput]: DesignInput[K] extends boolean ? K : never }[keyof DesignInput];
 
@@ -255,6 +255,24 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
           <div key={g.key}>{check(g.key, g.label, g.help)}</div>
         ))}
       </Section>
+
+      {input.defender && (
+        <Section title="Defender plans">
+          <p className="muted">Turned on by ALZ's Deploy-MDFC-Config at the top management group; each plan is billed per protected resource.</p>
+          {DEFENDER_PLANS.map((p) => (
+            <label key={p.key} className="check" title={p.help}>
+              <input
+                type="checkbox"
+                checked={input.defenderPlans.includes(p.key)}
+                onChange={(e) =>
+                  set('defenderPlans', e.target.checked ? [...input.defenderPlans, p.key] : input.defenderPlans.filter((k) => k !== p.key))
+                }
+              />
+              {p.label}
+            </label>
+          ))}
+        </Section>
+      )}
 
       {input.privateCorp && (
         <Section title="Private DNS zones">

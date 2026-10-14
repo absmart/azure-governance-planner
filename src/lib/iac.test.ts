@@ -272,6 +272,14 @@ describe('buildIacModel', () => {
     for (const ref of set.properties.policyDefinitions!) expect(ref.parameters).toEqual({ effect: { value: 'Deny' } });
   });
 
+  it('sets every Defender plan explicitly over the ALZ Disabled defaults', () => {
+    const a = model({ defenderPlans: ['Servers', 'Cspm'] }).assignments.find((x) => x.name === 'Deploy-MDFC-Config-H224')!;
+    expect(a.parameters.enableAscForServers).toEqual({ value: 'DeployIfNotExists' });
+    expect(a.parameters.enableAscForCspm).toEqual({ value: 'DeployIfNotExists' });
+    expect(a.parameters.enableAscForStorage).toEqual({ value: 'Disabled' });
+    expect(a.parameters.enableAscForAI).toEqual({ value: 'Disabled' });
+  });
+
   it('reports inputs still at their placeholder', () => {
     const m = model();
     const unset = unsetInputs(m, { environment: 'prod', values: {} }).map((i) => i.name);

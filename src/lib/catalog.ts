@@ -61,6 +61,8 @@ export interface Member {
   e: string;
   /** policyDefinitionReferenceIds it is included under, for exemptions. */
   r?: string[];
+  /** The initiative parameter its effect is wired to (ALZ initiatives), when there is one. */
+  ep?: string;
 }
 
 export interface ExtraInitiative {

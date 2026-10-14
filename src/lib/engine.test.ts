@@ -5,6 +5,8 @@ import {
   assignmentName,
   buildDesign,
   DEFAULT_INPUT,
+  DEFAULT_DEFENDER_PLANS,
+  DEFENDER_PLANS,
   effectiveAssignments,
   exemptionExpiry,
   inNistBaseline,
@@ -264,6 +266,38 @@ describe('Azure Government', () => {
   it('warns about commercial regions', () => {
     expect(design({ cloud: 'AzureUSGovernment' }).notes.some((n) => n.text.startsWith('Not Azure Government regions'))).toBe(true);
     expect(gov.notes.some((n) => n.text.startsWith('Not Azure Government regions'))).toBe(false);
+  });
+});
+
+describe('Defender plans', () => {
+  const mdfc = (input: Partial<DesignInput> = {}) => find(design(input), 'Deploy-MDFC-Config-H224')!.a;
+  const effectOf = (a: ReturnType<typeof mdfc>, param: string) => [...new Set(a.policies.filter((m) => m.ep === param).map((m) => m.e))];
+
+  it('knows which initiative parameter drives each plan', () => {
+    const members = catalog.alz.assignments['Deploy-MDFC-Config-H224'].policies;
+    for (const p of DEFENDER_PLANS) expect(members.some((m) => m.ep === `enableAscFor${p.key}`), p.key).toBe(true);
+  });
+
+  it('turns on the default plans, which ALZ ships Disabled, and leaves CSPM and AI off', () => {
+    const a = mdfc();
+    expect(DEFAULT_DEFENDER_PLANS).not.toContain('Cspm');
+    expect(a.parameters).toMatchObject({ enableAscForServers: 'DeployIfNotExists', enableAscForCspm: 'Disabled', enableAscForAI: 'Disabled' });
+    expect(effectOf(a, 'enableAscForServers')).toEqual(['DeployIfNotExists']);
+    expect(effectOf(a, 'enableAscForContainers')).toEqual(['DeployIfNotExists']);
+    expect(effectOf(a, 'enableAscForCspm')).toEqual(['Disabled']);
+    expect(a.change).toMatch(/Enables Defender plans: Servers/);
+  });
+
+  it('follows the picked plans, and overrides of the plan parameters', () => {
+    const a = mdfc({ defenderPlans: ['Cspm'] });
+    expect(effectOf(a, 'enableAscForCspm')).toEqual(['DeployIfNotExists']);
+    expect(effectOf(a, 'enableAscForServers')).toEqual(['Disabled']);
+    expect(mdfc({ defenderPlans: [] }).change).toMatch(/No Defender plans/);
+    const o = mdfc({ overrides: { 'root/Deploy-MDFC-Config-H224': { parameters: { enableAscForSql: 'Disabled' } } } });
+    expect(effectOf(o, 'enableAscForSql')).toEqual(['Disabled']);
+    expect(effectOf(o, 'enableAscForStorage')).toEqual(['DeployIfNotExists']);
+    // The catalog's members are left as they were.
+    expect(catalog.alz.assignments['Deploy-MDFC-Config-H224'].policies.find((m) => m.ep === 'enableAscForSql')!.e).toBe('Disabled');
   });
 });
 

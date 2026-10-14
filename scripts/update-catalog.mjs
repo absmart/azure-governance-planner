@@ -333,7 +333,15 @@ for (const name of assignmentNames) {
         .flatMap((i) => initiativeMembers.get(i.initiativeId))
         .find((m) => m.initiativePolicyId === pid);
       usePolicy(pid, csv);
-      return { p: pid, e: resolveEffect(set, ref, p.parameters) || policies[pid]?.e || '', r: [ref.policyDefinitionReferenceId] };
+      // The initiative parameter the member's effect is wired to, so a design can change it.
+      const effectKey = Object.keys(ref.parameters ?? {}).find((k) => k.toLowerCase() === 'effect');
+      const ep = /^\[parameters\('(.+)'\)\]$/.exec(effectKey ? String(ref.parameters[effectKey].value) : '')?.[1];
+      return {
+        p: pid,
+        e: resolveEffect(set, ref, p.parameters) || policies[pid]?.e || '',
+        r: [ref.policyDefinitionReferenceId],
+        ...(ep ? { ep } : {}),
+      };
     });
   } else if (isSet) {
     const set = initiativeInfo.get(defName);

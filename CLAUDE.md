@@ -70,6 +70,7 @@ Terraform needs `azurerm ~> 4.0` and `azapi ~> 2.0`; `azapi` is only for the ten
 - **ALZ library details.**
   - Custom initiatives reference custom policies under `managementGroups/contoso/`.
   - Assignments use `${default_location}` and `{enforcementMode}` (rendered "must" or "should").
+  - A member's `ep` in the catalog is the initiative parameter its effect is wired to. Assignment parameters (the Defender plans, overrides) change those members' effects in the engine. Deploy-MDFC-Config's `enableAscFor<Plan>` parameters are the Defender plans; ALZ's assignment sets 12 of them to Disabled.
   - The private DNS initiative builds zone IDs from `dnsZoneSubscriptionId`, `dnsZoneResourceGroupName` and `dnsZoneRegion`. Its per-zone placeholder IDs are dropped.
 - **Untested against live services.** PIM couldn't be tested because the dev tenant isn't onboarded (it needs Entra ID P2). Azure Government exports were checked only with `terraform validate` and Bicep builds, not a Government plan.
 - **Validated with real tools.** The Bicep DCRs, solutions, AMA identity and private DNS zones passed `az deployment group what-if` against `rg-azure-governance-planner` (read-only). Tenant-scope what-if needs rights the dev account doesn't have.

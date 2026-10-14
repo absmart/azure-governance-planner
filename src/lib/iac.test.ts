@@ -225,6 +225,17 @@ describe('buildIacModel', () => {
     expect(JSON.parse(off.find((f) => f.name === 'lib/subscription-placements.json')!.content)).toEqual([]);
   });
 
+  it('asks for the hub virtual networks to link the private DNS zones to', () => {
+    const m = model();
+    const input = m.inputs.find((i) => i.name === 'private_dns_virtual_network_ids')!;
+    expect(input.placeholder).toBe('');
+    expect(unsetInputs(m, { environment: 'prd', values: {} }).map((i) => i.name)).toContain('private_dns_virtual_network_ids');
+    expect(model({ privateDnsZones: [] }).inputs.map((i) => i.name)).not.toContain('private_dns_virtual_network_ids');
+    const bicep = generateIacFiles('bicep', m, { environment: 'prd', values: {} }).find((f) => f.name === 'modules/private-dns-zones.bicep')!.content;
+    expect(bicep).toContain("Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01");
+    expect(bicep).toContain('registrationEnabled: false');
+  });
+
   it('asks for no DDoS plan by default', () => {
     expect(model().inputs.map((i) => i.name)).not.toContain('ddos_protection_plan_id');
     expect(model({ ddos: true }).inputs.map((i) => i.name)).toContain('ddos_protection_plan_id');

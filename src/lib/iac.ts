@@ -294,6 +294,8 @@ const NEW_INPUT_DESCRIPTION: Record<string, string> = {
   change_tracking_data_collection_rule_name: 'Name of the Change Tracking and Inventory data collection rule.',
   defender_sql_data_collection_rule_name: 'Name of the Defender for SQL data collection rule.',
   private_dns_zone_resource_group_name: 'Resource group created in the private DNS zone subscription for the private link DNS zones.',
+  private_dns_virtual_network_ids:
+    'Resource IDs of the hub virtual networks to link the private DNS zones to, comma-separated (one per region), so workloads resolve private endpoints.',
   pim_approver_group_id: 'Object ID of the Entra ID group that approves privileged role activations (PIM). Without it, activations need no approval.',
 };
 
@@ -565,6 +567,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
   if (platform.userAssignedIdentity && !inputUse.has('ama_user_assigned_managed_identity_name'))
     inputUse.set('ama_user_assigned_managed_identity_name', new Set());
   for (const rule of platform.dataCollectionRules) inputUse.set(RULE_NAME_INPUT[rule], new Set());
+  if (platform.privateDnsZones.length) inputUse.set('private_dns_virtual_network_ids', new Set());
   // Subscriptions. With a single platform subscription, one value serves them all.
   const single = design.input.platform === 'single';
   const aliases: Record<string, string> = {};
@@ -622,6 +625,7 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
       case 'management_subscription_id':
       case 'platform_subscription_id':
       case 'pim_approver_group_id':
+      case 'private_dns_virtual_network_ids':
         return '';
       default:
         if (NAME_DEFAULTS[name]) return NAME_DEFAULTS[name];
@@ -966,6 +970,8 @@ module privateDnsZones 'modules/private-dns-zones.bicep' = if (platform.privateD
   scope: resourceGroup(privateDns.subscriptionId, privateDns.resourceGroupName)
   params: {
     zones: platform.privateDnsZones
+    // Comma-separated hub virtual network IDs.
+    virtualNetworkIds: filter(map(split(policyValues.?private_dns_virtual_network_ids ?? '', ','), id => trim(id)), id => !empty(id))
   }
   dependsOn: [privateDnsResourceGroup]
 }
@@ -1138,7 +1144,7 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
 
 export function toBicepPrivateDnsZonesModule(): string {
   return `${commentBlock('//', [
-    'Private link DNS zones. Link them to the hub virtual network(s) so workloads resolve',
+    'Private link DNS zones, linked to the hub virtual networks so workloads resolve',
     'private endpoints; ALZ\'s Deploy-Private-DNS-Zones policy adds the records.',
     GENERATOR,
   ])}
@@ -1146,10 +1152,33 @@ targetScope = 'resourceGroup'
 
 param zones array
 
+@description('Hub virtual network resource IDs every zone is linked to.')
+param virtualNetworkIds array = []
+
 resource zone 'Microsoft.Network/privateDnsZones@2024-06-01' = [
   for name in zones: {
     name: name
     location: 'global'
+  }
+]
+
+var links = flatten(map(zones, z => map(virtualNetworkIds, v => {
+  zone: z
+  virtualNetworkId: v
+})))
+
+// Resolution only: private link zones get their records from the policy, not auto-registration.
+resource link 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = [
+  for l in links: {
+    name: '\${l.zone}/\${take(last(split(l.virtualNetworkId, '/')), 75)}-link'
+    location: 'global'
+    properties: {
+      virtualNetwork: {
+        id: l.virtualNetworkId
+      }
+      registrationEnabled: false
+    }
+    dependsOn: [zone]
   }
 ]
 `;
@@ -2261,6 +2290,26 @@ resource "azurerm_private_dns_zone" "this" {
 }
 
 locals {
+  # Comma-separated hub virtual network IDs in policy_values.
+  private_dns_virtual_network_ids = [for id in split(",", lookup(var.policy_values, "private_dns_virtual_network_ids", "")) : trimspace(id) if trimspace(id) != ""]
+  private_dns_links = {
+    for pair in setproduct(keys(azurerm_private_dns_zone.this), local.private_dns_virtual_network_ids) :
+    "\${pair[0]}|\${pair[1]}" => { zone = pair[0], virtual_network_id = pair[1] }
+  }
+}
+
+# Resolution only: private link zones get their records from the policy, not auto-registration.
+resource "azurerm_private_dns_zone_virtual_network_link" "hub" {
+  for_each              = local.private_dns_links
+  provider              = azurerm.connectivity
+  name                  = "\${substr(basename(each.value.virtual_network_id), 0, 75)}-link"
+  resource_group_name   = azurerm_resource_group.private_dns[0].name
+  private_dns_zone_name = azurerm_private_dns_zone.this[each.value.zone].name
+  virtual_network_id    = each.value.virtual_network_id
+  registration_enabled  = false
+}
+
+locals {
   # The created resources' IDs, for the policy parameters that point at them.
   platform_values = {
     for k, v in {
@@ -2889,7 +2938,7 @@ function platformSection(model: IacModel): string {
     platform.privateDnsResourceGroup &&
       `  - in the private DNS zone subscription, the resource group for the private link DNS zones${
         platform.privateDnsZones.length
-          ? `, with ${platform.privateDnsZones.length} zones (${platform.privateDnsZones.join(', ')}). Link them to your hub virtual network(s); ALZ's policy adds the private endpoint records`
+          ? `, with ${platform.privateDnsZones.length} zones (${platform.privateDnsZones.join(', ')}), linked to the hub virtual networks in \`private_dns_virtual_network_ids\`; ALZ's policy adds the private endpoint records`
           : '. Create the zones in it: the policy adds records to them, it does not create them'
       };`,
   ].filter(Boolean);

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Catalog } from '../lib/catalog';
 import {
+  exemptionExpiry,
   overrideKey,
   type AssignmentOverride,
   type Design,
@@ -152,6 +153,16 @@ export function OverrideEditor(props: {
   );
 }
 
+function ExpiryBadge({ exemption }: { exemption: Exemption }) {
+  const { state, days } = exemptionExpiry(exemption);
+  if (state === 'active') return null;
+  return (
+    <span className={`badge ${state === 'expired' ? 'expired' : 'warn'}`}>
+      {state === 'expired' ? 'expired' : `expires in ${days} day${days === 1 ? '' : 's'}`}
+    </span>
+  );
+}
+
 let exemptionSeq = 0;
 
 /** Exemptions of one assignment: the whole assignment or some of its policies, at a scope inside it. */
@@ -216,7 +227,8 @@ export function ExemptionsEditor(props: {
             <li key={e.id}>
               <span className="badge mode-dne">{e.category}</span> {e.policies.length ? `${e.policies.length} policies` : 'Whole assignment'} at{' '}
               <strong>{label(e)}</strong>
-              {e.expiresOn && <span className="muted"> until {e.expiresOn}</span>}: {e.reason}{' '}
+              {e.expiresOn && <span className="muted"> until {e.expiresOn}</span>}
+              <ExpiryBadge exemption={e} />: {e.reason}{' '}
               <button className="link" onClick={() => remove(e.id)}>
                 Remove
               </button>

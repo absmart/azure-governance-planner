@@ -1264,3 +1264,8 @@ table.pim-settings td.current {
   flex: 1 1 200px;
   max-width: 320px;
 }
+
+.badge.expired {
+  color: var(--error);
+  background: var(--error-bg);
+}

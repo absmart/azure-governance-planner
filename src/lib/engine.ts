@@ -70,6 +70,19 @@ export interface Exemption {
   expiresOn?: string;
 }
 
+/** Exemptions that expire within this many days are flagged. */
+export const EXPIRY_WARNING_DAYS = 30;
+
+/** Whether an exemption has expired, expires soon, or is fine, and the days left. */
+export function exemptionExpiry(e: Exemption, now = new Date()): { state: 'active' | 'expiring' | 'expired'; days: number | null } {
+  if (!e.expiresOn) return { state: 'active', days: null };
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const [y, m, d] = e.expiresOn.split('-').map(Number);
+  const days = Math.round((Date.UTC(y, m - 1, d) - today) / 86_400_000);
+  // Expires at the start of its day (UTC), so an exemption for today has expired.
+  return { state: days <= 0 ? 'expired' : days <= EXPIRY_WARNING_DAYS ? 'expiring' : 'active', days };
+}
+
 export const overrideKey = (mg: MgRole, assignment: string) => `${mg}/${assignment}`;
 
 export interface DesignInput {
@@ -390,7 +403,7 @@ function mgId(prefix: string, role: MgRole): string {
   return role === 'root' ? p : `${p}-${role}`;
 }
 
-export function buildDesign(catalog: Catalog, input: DesignInput): Design {
+export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date()): Design {
   const notes: Note[] = [];
   const frameworks = input.frameworks
     .map((k) => catalog.frameworks.find((f) => f.key === k))
@@ -778,6 +791,20 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
       notes.push({ level: 'warning', text: `Exemption "${e.reason || e.id}" is outside ${a.name}'s scope, so it has no effect.` });
       continue;
     }
+    const expiry = exemptionExpiry(e, now);
+    if (expiry.state === 'expired') {
+      // It no longer applies, and Azure won't create an exemption that has expired.
+      notes.push({
+        level: 'warning',
+        text: `Exemption "${e.reason || e.id}" on ${a.name} expired on ${e.expiresOn}, so it no longer applies and isn't exported. Renew or remove it.`,
+      });
+      continue;
+    }
+    if (expiry.state === 'expiring')
+      notes.push({
+        level: 'warning',
+        text: `Exemption "${e.reason || e.id}" on ${a.name} expires in ${expiry.days} day${expiry.days === 1 ? '' : 's'} (${e.expiresOn}).`,
+      });
     a.exemptions.push(e);
   }
 

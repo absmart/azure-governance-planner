@@ -6,6 +6,7 @@ import {
   buildDesign,
   DEFAULT_INPUT,
   effectiveAssignments,
+  exemptionExpiry,
   inNistBaseline,
   type DesignInput,
 } from './engine';
@@ -373,5 +374,40 @@ describe('Privileged Identity Management', () => {
 
   it('can be turned off', () => {
     expect(design({ pim: { enabled: false, profile: 'auto', roles: [], eligibilities: [] } }).pim).toBeNull();
+  });
+});
+
+describe('exemption expiry', () => {
+  const now = new Date('2026-10-13T15:00:00Z');
+  const exemption = (id: string, expiresOn?: string) => ({
+    id,
+    mg: 'landingzones' as const,
+    assignment: 'Deny-IP-forwarding',
+    scope: { kind: 'managementGroup' as const, role: 'corp' as const },
+    policies: [],
+    category: 'Waiver' as const,
+    reason: id,
+    ...(expiresOn ? { expiresOn } : {}),
+  });
+
+  it('tells active, expiring and expired exemptions apart', () => {
+    expect(exemptionExpiry(exemption('a'), now)).toEqual({ state: 'active', days: null });
+    expect(exemptionExpiry(exemption('a', '2026-12-31'), now).state).toBe('active');
+    expect(exemptionExpiry(exemption('a', '2026-11-12'), now)).toEqual({ state: 'expiring', days: 30 });
+    expect(exemptionExpiry(exemption('a', '2026-10-14'), now)).toEqual({ state: 'expiring', days: 1 });
+    expect(exemptionExpiry(exemption('a', '2026-10-13'), now).state).toBe('expired');
+    expect(exemptionExpiry(exemption('a', '2026-01-01'), now).state).toBe('expired');
+  });
+
+  it('warns about expiring ones and leaves expired ones out', () => {
+    const d = buildDesign(
+      catalog,
+      { ...DEFAULT_INPUT, exemptions: [exemption('soon', '2026-10-20'), exemption('gone', '2026-09-30'), exemption('fine', '2027-06-30')] },
+      now,
+    );
+    const a = d.mgs.find((m) => m.role === 'landingzones')!.assignments.find((x) => x.name === 'Deny-IP-forwarding')!;
+    expect(a.exemptions.map((e) => e.id)).toEqual(['soon', 'fine']);
+    expect(d.notes.some((n) => n.text.includes('"soon"') && n.text.includes('expires in 7 days'))).toBe(true);
+    expect(d.notes.some((n) => n.text.includes('"gone"') && n.text.includes('expired on 2026-09-30'))).toBe(true);
   });
 });

@@ -3,6 +3,7 @@ import type { Catalog } from '../lib/catalog';
 import {
   ENFORCING_EFFECTS,
   effectiveAssignments,
+  exemptionExpiry,
   overrideKey,
   type Design,
   type DesignInput,
@@ -87,6 +88,7 @@ function AssignmentRow({
               {a.exemptions.length} exemption{a.exemptions.length > 1 ? 's' : ''}
             </span>
           )}
+          {a.exemptions.some((e) => exemptionExpiry(e).state === 'expiring') && <span className="badge warn">expiring</span>}
         </td>
         <td>
           <OriginBadge origin={a.origin} />

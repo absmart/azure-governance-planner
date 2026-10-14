@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notes } from './components/common';
 import { CompareView } from './components/CompareView';
 import { Coverage } from './components/Coverage';
@@ -8,6 +8,7 @@ import { ExportDialog } from './components/ExportDialog';
 import { Hierarchy } from './components/Hierarchy';
 import { Policies } from './components/Policies';
 import { PrivilegedAccess } from './components/PrivilegedAccess';
+import { ShareDialog } from './components/ShareDialog';
 import catalogJson from './data/catalog.json';
 import type { Catalog } from './lib/catalog';
 import {
@@ -24,6 +25,7 @@ import {
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './lib/engine';
 import type { ExportSettings } from './lib/iac';
 import type { PolicySnapshot } from './lib/snapshot';
+import { decodeDesign, tokenFromHash } from './lib/share';
 import { STORAGE_KEYS, loadDesigns, loadExportSettings, loadInput, readJson, saveInput, writeJson } from './lib/storage';
 import { downloadFile } from './lib/download';
 import { buildReport, reportFileName } from './lib/report';
@@ -48,6 +50,9 @@ export default function App() {
   const [storageOk, setStorageOk] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [showDesigns, setShowDesigns] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  /** A shared design link that couldn't be opened, or the one just opened. */
+  const [shareMessage, setShareMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [azureImports, setAzureImports] = useState<PolicySnapshot[]>(() => readJson<PolicySnapshot[]>(STORAGE_KEYS.azureImports) ?? []);
   useEffect(() => {
     setStorageOk(writeJson(STORAGE_KEYS.azureImports, azureImports));
@@ -60,6 +65,9 @@ export default function App() {
   const [activeDesignId, setActiveDesignId] = useState<string | null>(() => readJson<string>(STORAGE_KEYS.activeDesign));
   const activeDesign = designs.find((d) => d.id === activeDesignId);
   const unsaved = hasUnsavedChanges(activeDesign, input, exportSettings);
+  // For the design-link handler, which only runs once: whether there's work a link would replace.
+  const unsavedRef = useRef(false);
+  unsavedRef.current = unsaved && JSON.stringify(input) !== JSON.stringify(DEFAULT_INPUT);
 
   useEffect(() => {
     setStorageOk(saveInput(input));
@@ -121,6 +129,29 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  // A design link (#design=...) opens the design it carries as the current, unsaved one.
+  useEffect(() => {
+    const open = async () => {
+      const token = tokenFromHash(window.location.hash);
+      if (!token) return;
+      // A reload shouldn't open it again.
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      try {
+        const shared = await decodeDesign(token);
+        if (unsavedRef.current && !window.confirm(`Open the shared design "${shared.input.name}"? The current design has unsaved changes, which will be lost.`)) return;
+        setInput(shared.input);
+        if (shared.exportSettings) setExportSettings(shared.exportSettings);
+        setActiveDesignId(null);
+        setShareMessage({ kind: 'ok', text: `Opened the shared design "${shared.input.name}". Save it from Designs to keep it.` });
+      } catch (e) {
+        setShareMessage({ kind: 'error', text: `Couldn't open the design link: ${(e as Error).message}` });
+      }
+    };
+    void open();
+    window.addEventListener('hashchange', open);
+    return () => window.removeEventListener('hashchange', open);
+  }, []);
+
   const reset = () => {
     if (window.confirm('Start a new design from the default NIST 800-53 example? Saved designs are kept.')) newDesign();
   };
@@ -156,6 +187,9 @@ export default function App() {
             {warnings} warning{warnings === 1 ? '' : 's'}
           </span>
           <button onClick={() => setShowDesigns(true)}>Designs{designs.length ? ` (${designs.length})` : ''}</button>
+          <button title="A link that carries this design, to send to someone" onClick={() => setSharing(true)}>
+            Share
+          </button>
           <button
             title="Download the control coverage, assignments, exemptions, overrides and privileged access as an Excel workbook"
             onClick={() =>
@@ -198,6 +232,16 @@ export default function App() {
       <div className="layout">
         <Decisions catalog={catalog} input={input} onChange={setInput} />
         <main>
+          {shareMessage && (
+            <ul className="issues">
+              <li className={shareMessage.kind}>
+                {shareMessage.text}{' '}
+                <button className="link" onClick={() => setShareMessage(null)}>
+                  Dismiss
+                </button>
+              </li>
+            </ul>
+          )}
           <Notes notes={design.notes} />
           {!storageOk && <p className="muted">Browser storage is unavailable; designs won't be kept after you close the page. Export them from Designs.</p>}
           {view === 'hierarchy' && <Hierarchy catalog={catalog} design={design} input={input} onChange={setInput} />}
@@ -231,6 +275,7 @@ export default function App() {
           onClose={() => setExporting(false)}
         />
       )}
+      {sharing && <ShareDialog input={input} exportSettings={exportSettings} onClose={() => setSharing(false)} />}
       {showDesigns && (
         <DesignsDialog
           catalog={catalog}

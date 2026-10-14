@@ -1511,3 +1511,24 @@ td.differs {
 .import-azure .chosen-files {
   margin-top: 6px;
 }
+
+.dialog.share {
+  width: min(720px, 100%);
+}
+
+.share-link {
+  margin-top: 10px;
+  flex-wrap: nowrap;
+}
+
+.share-link input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.dialog.share label.check {
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 13px;
+}

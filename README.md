@@ -31,6 +31,8 @@ ALZ's custom roles (Application Owners, Network Management, Network Subnet Contr
 
 The view lists the controls this helps address (NIST 800-53 AC-2(6), AC-2(7), AC-6(5), AC-6(7), IA-2(1), AC-2(4); NIST 800-171; CMMC; MCSB PA-1, PA-2, PA-4; ISO 27001; PCI DSS; SOC 2). Terraform sets the role settings and eligible assignments with `azurerm_role_management_policy` and `azurerm_pim_eligible_role_assignment`; Bicep creates the eligible assignments and `scripts/set-pim-policies.sh` (az CLI and jq) sets the role settings. The groups' and the approver's Entra ID object IDs are per-environment values. PIM needs Entra ID P2 or Entra ID Governance.
 
+**Share** (top bar) makes a link that carries the design itself, deflate-compressed after the `#`, so nothing is uploaded or stored anywhere: only the decisions that differ from the defaults go in, so links stay short (a FedRAMP High design with an override and an exemption is under 800 characters). The export's environment values (subscription and group object IDs) are left out unless you include them. Opening a link loads the design as the current, unsaved one, to change and save.
+
 ## Compare, and import from Azure
 
 The **Compare** view puts any two of these side by side: the current design, a saved design, or a tenant imported from Azure.

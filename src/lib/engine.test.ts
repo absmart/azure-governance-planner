@@ -317,14 +317,19 @@ describe('parking lot', () => {
   });
 
   it('adds a Parking lot group under the root with the chosen guardrails', () => {
-    const sandbox = design({ parkingLot: true }).mgs.find((m) => m.role === 'parkinglot')!;
-    expect(sandbox.parent).toBe('root');
-    expect(sandbox.id).toBe('contoso-parkinglot');
-    expect(sandbox.assignments.map((a) => a.name)).toEqual(['Enforce-ALZ-Sandbox']);
-
-    const locked = design({ parkingLot: true, parkingLotGuardrails: 'locked' }).mgs.find((m) => m.role === 'parkinglot')!;
+    // Locked by default: a custom deny-everything policy, enforced even in the audit-first posture.
+    const locked = design({ enforcement: 'audit' }).mgs.find((m) => m.role === 'parkinglot')!;
+    expect(locked.parent).toBe('root');
+    expect(locked.id).toBe('contoso-parkinglot');
     expect(locked.assignments.map((a) => a.name)).toEqual(['Deny-Parking-Resources']);
-    expect(locked.assignments[0].parameters).toEqual({ listOfResourceTypesAllowed: [], effect: 'Deny' });
+    expect(locked.assignments[0]).toMatchObject({
+      definitionSource: 'Custom',
+      enforcementMode: 'Default',
+      definitionId: '/providers/Microsoft.Management/managementGroups/contoso/providers/Microsoft.Authorization/policyDefinitions/Deny-ParkingLot-Resources',
+    });
+
+    const sandbox = design({ parkingLotGuardrails: 'sandbox' }).mgs.find((m) => m.role === 'parkinglot')!;
+    expect(sandbox.assignments.map((a) => a.name)).toEqual(['Enforce-ALZ-Sandbox']);
 
     const inherit = design({ parkingLot: true, parkingLotGuardrails: 'inherit' }).mgs.find((m) => m.role === 'parkinglot')!;
     expect(inherit.assignments).toEqual([]);

@@ -14,7 +14,7 @@
 
 import type { Catalog } from './catalog';
 import { govZoneName } from './cloud';
-import type { Design, PlannedAssignment, ScopeRef } from './engine';
+import { PARKING_LOT_ALLOWED_TYPES, PARKING_LOT_POLICY, type Design, type PlannedAssignment, type ScopeRef } from './engine';
 import { resourceName } from './naming';
 import { privateDnsZones } from './privateDns';
 
@@ -45,7 +45,7 @@ export interface ArmDefinition {
     mode?: string;
     metadata?: unknown;
     parameters?: Record<string, unknown>;
-    policyRule?: { then?: { details?: { roleDefinitionIds?: string[] } } };
+    policyRule?: { then?: { details?: { roleDefinitionIds?: string[] }; [key: string]: unknown }; [key: string]: unknown };
     policyDefinitions?: SetReference[];
     policyDefinitionGroups?: { name: string; displayName?: string; category?: string; description?: string }[];
   };
@@ -369,7 +369,10 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
     for (const a of mg.assignments) {
       const policyDefinitionId = atRoot(a.definitionId);
       if (a.definitionSource === 'ALZ') (a.kind === 'initiative' ? useSet : useDefinition)(lastSegment(policyDefinitionId));
-      if (a.definitionSource === 'Custom') sets.set(a.name, frameworkEnforcementSet(a));
+      if (a.definitionSource === 'Custom') {
+        if (a.kind === 'initiative') sets.set(a.name, frameworkEnforcementSet(a));
+        else if (lastSegment(policyDefinitionId) === PARKING_LOT_POLICY) definitions.set(PARKING_LOT_POLICY, parkingLotDefinition());
+      }
 
       let parameters: Record<string, { value: unknown }> = {};
       const inputs: Record<string, string> = {};
@@ -647,6 +650,41 @@ export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibr
 /** "11111111-..." from a subscription GUID or "/subscriptions/<guid>[/...]". */
 function subscriptionGuid(id: string): string {
   return /\/subscriptions\/([^/]+)/i.exec(id)?.[1] ?? id.trim();
+}
+
+/** Deny every resource type (mode All: resource groups and subscription resources too) except a short list. */
+function parkingLotDefinition(): ArmDefinition {
+  return {
+    name: PARKING_LOT_POLICY,
+    properties: {
+      displayName: 'Deny resources in parking lot subscriptions',
+      description:
+        'Denies creating or changing any resource, resource group or subscription setting except the allowed resource types, so a subscription in the parking lot can only be moved to its landing zone.',
+      policyType: 'Custom',
+      mode: 'All',
+      metadata: { category: 'General', version: '1.0.0', source: 'Azure Governance Planner' },
+      parameters: {
+        effect: {
+          type: 'String',
+          allowedValues: ['Deny', 'Audit', 'Disabled'],
+          defaultValue: 'Deny',
+          metadata: { displayName: 'Effect' },
+        },
+        allowedResourceTypes: {
+          type: 'Array',
+          defaultValue: PARKING_LOT_ALLOWED_TYPES,
+          metadata: {
+            displayName: 'Allowed resource types',
+            description: 'Types still allowed, by default the security baseline the platform deploys (Defender for Cloud, activity log).',
+          },
+        },
+      },
+      policyRule: {
+        if: { field: 'type', notIn: "[parameters('allowedResourceTypes')]" },
+        then: { effect: "[parameters('effect')]" },
+      },
+    },
+  };
 }
 
 /** The design's custom initiative of framework policies set to Deny. */
@@ -2770,10 +2808,19 @@ ${p.eligibilities.map((e) => `  - ${e.name}: ${e.roleName} at \`${e.managementGr
 function hierarchySection(model: IacModel): string {
   const h = model.hierarchySettings;
   if (!h) return '';
+  const locked = model.policyDefinitions.some((d) => d.name === PARKING_LOT_POLICY);
   return `- **Parking lot.** The export sets the tenant's default management group to \`${h.defaultManagementGroupId}\`, so new
   subscriptions land there instead of the tenant root group${
     h.requireAuthorizationForGroupCreation ? ', and requires permission on the tenant root group to create management groups' : ''
-  }. Changing these tenant settings needs Owner on the tenant root group.
+  }. Changing these tenant settings needs Owner on the tenant root group.${
+    locked
+      ? `
+  The parking lot is locked: \`${PARKING_LOT_POLICY}\` denies every resource type, resource groups included, apart from
+  the platform security baseline (${PARKING_LOT_ALLOWED_TYPES.map((t) => `\`${t}\``).join(', ')}). Moving a
+  subscription in or out isn't a deployment, so it still works: it needs Owner on the subscription and Management Group
+  Contributor on both groups, so keep those roles to the people who place subscriptions.`
+      : ''
+  }
 `;
 }
 

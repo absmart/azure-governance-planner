@@ -224,8 +224,8 @@ export function Decisions(props: { catalog: Catalog; input: DesignInput; onChang
                 value={input.parkingLotGuardrails}
                 onChange={(e) => set('parkingLotGuardrails', e.target.value as DesignInput['parkingLotGuardrails'])}
               >
+                <option value="locked">Locked: only moving the subscription in or out</option>
                 <option value="sandbox">Sandbox: no connections to corporate networks</option>
-                <option value="locked">Locked: no resources until moved</option>
                 <option value="inherit">Root guardrails only</option>
               </select>
             </label>

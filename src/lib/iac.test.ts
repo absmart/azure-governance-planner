@@ -391,6 +391,23 @@ describe('parking lot in the export', () => {
   });
 });
 
+describe('locked parking lot in the export', () => {
+  it('creates a mode All policy that denies every type but the security baseline, assigned at the parking lot', () => {
+    const m = model();
+    const def = m.policyDefinitions.find((d) => d.name === 'Deny-ParkingLot-Resources')!;
+    expect(def.properties.mode).toBe('All');
+    expect(def.properties.policyRule).toEqual({
+      if: { field: 'type', notIn: "[parameters('allowedResourceTypes')]" },
+      then: { effect: "[parameters('effect')]" },
+    });
+    expect((def.properties.parameters as Record<string, { defaultValue: unknown }>).allowedResourceTypes.defaultValue).toContain('Microsoft.Security/pricings');
+    const a = m.assignments.find((x) => x.name === 'Deny-Parking-Resources')!;
+    expect(a.managementGroupId).toBe('contoso-parkinglot');
+    expect(a.policyDefinitionId).toBe('/providers/Microsoft.Management/managementGroups/contoso/providers/Microsoft.Authorization/policyDefinitions/Deny-ParkingLot-Resources');
+    expect(generateIacFiles('bicep', m, { environment: 'prd', values: {} }).find((f) => f.name === 'README.md')!.content).toContain('The parking lot is locked');
+  });
+});
+
 describe('PIM in the export', () => {
   const m = model({ frameworks: ['fedramp-high'] });
 

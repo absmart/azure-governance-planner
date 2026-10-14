@@ -100,7 +100,11 @@ export interface DesignInput {
    * management group) until they're moved to their landing zone.
    */
   parkingLot: boolean;
-  /** sandbox: ALZ's sandbox guardrails; locked: no resources at all; inherit: only the root's. */
+  /**
+   * locked: nothing can be deployed (a custom deny-everything policy, resource
+   * groups included), so a subscription can only be moved out; sandbox: ALZ's
+   * sandbox guardrails; inherit: only the root's.
+   */
   parkingLotGuardrails: 'sandbox' | 'locked' | 'inherit';
   /** Tenant setting: only users with permission at the root can create management groups. */
   requireManagementGroupAuthorization: boolean;
@@ -143,7 +147,7 @@ export const DEFAULT_INPUT: DesignInput = {
   confidential: false,
   sandbox: true,
   parkingLot: true,
-  parkingLotGuardrails: 'sandbox',
+  parkingLotGuardrails: 'locked',
   requireManagementGroupAuthorization: true,
   decommissioned: true,
   allowedLocations: ['eastus2', 'centralus'],
@@ -160,6 +164,21 @@ export const DEFAULT_INPUT: DesignInput = {
   exemptions: [],
   pim: DEFAULT_PIM,
 };
+
+/** Custom policy definition behind the locked parking lot. */
+export const PARKING_LOT_POLICY = 'Deny-ParkingLot-Resources';
+
+/**
+ * Resource types the locked parking lot still allows: the security baseline the
+ * root's DeployIfNotExists policies put in every subscription. Not user deployments.
+ */
+export const PARKING_LOT_ALLOWED_TYPES = [
+  'Microsoft.Security/pricings',
+  'Microsoft.Security/securityContacts',
+  'Microsoft.Security/settings',
+  'Microsoft.Security/autoProvisioningSettings',
+  'Microsoft.Insights/diagnosticSettings',
+];
 
 export const GOV_LOCATIONS = ['usgovvirginia', 'usgovtexas', 'usgovarizona', 'usdodeast', 'usdodcentral'];
 
@@ -578,21 +597,23 @@ export function buildDesign(catalog: Catalog, input: DesignInput): Design {
   }
 
   if (input.parkingLot && input.parkingLotGuardrails === 'locked') {
-    const id = BUILTIN_POLICY.allowedResourceTypes;
+    // The built-in "Allowed resource types" is Indexed, so it misses resource groups
+    // and resources without a location; this custom definition is mode All.
     mgByRole.get('parkinglot')!.assignments.push({
       name: 'Deny-Parking-Resources',
-      displayName: 'No resources in parking lot subscriptions',
-      description: 'Blocks every resource type until the subscription is moved to its landing zone.',
+      displayName: 'No deployments in parking lot subscriptions',
+      description:
+        'Denies creating or changing any resource, resource group or subscription setting until the subscription is moved to its landing zone. Only the platform security baseline (Defender for Cloud, activity log) is allowed.',
       origin: 'decision',
       kind: 'policy',
-      definitionId: builtInPolicyId(id),
-      definitionName: catalog.policies[id]?.n ?? 'Allowed resource types',
-      definitionSource: 'BuiltIn',
-      enforcementMode: input.enforcement === 'audit' ? 'DoNotEnforce' : 'Default',
+      definitionId: `/providers/Microsoft.Management/managementGroups/${mgId(input.prefix, 'root')}/providers/Microsoft.Authorization/policyDefinitions/${PARKING_LOT_POLICY}`,
+      definitionName: 'Deny resources in parking lot subscriptions',
+      definitionSource: 'Custom',
+      // Always enforced: an audit-only parking lot would let anything through.
+      enforcementMode: 'Default',
       identity: false,
-      policies: [policy(id, 'Deny')],
-      rationale: 'Locked parking lot: new subscriptions can hold nothing until they are placed.',
-      parameters: { listOfResourceTypesAllowed: [], effect: 'Deny' },
+      policies: [{ p: PARKING_LOT_POLICY, e: 'Deny' }],
+      rationale: 'Locked parking lot: a subscription can only be moved in or out; nothing can be deployed until it is placed.',
       exemptions: [],
     });
   }

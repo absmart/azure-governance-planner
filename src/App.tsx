@@ -23,6 +23,9 @@ import {
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './lib/engine';
 import type { ExportSettings } from './lib/iac';
 import { STORAGE_KEYS, loadDesigns, loadExportSettings, loadInput, readJson, saveInput, writeJson } from './lib/storage';
+import { downloadFile } from './lib/download';
+import { buildReport, reportFileName } from './lib/report';
+import { createXlsx } from './lib/xlsx';
 
 const catalog = catalogJson as unknown as Catalog;
 
@@ -146,6 +149,18 @@ export default function App() {
             {warnings} warning{warnings === 1 ? '' : 's'}
           </span>
           <button onClick={() => setShowDesigns(true)}>Designs{designs.length ? ` (${designs.length})` : ''}</button>
+          <button
+            title="Download the control coverage, assignments, exemptions, overrides and privileged access as an Excel workbook"
+            onClick={() =>
+              downloadFile(
+                reportFileName(input),
+                createXlsx(buildReport(catalog, design)),
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              )
+            }
+          >
+            Compliance report
+          </button>
           <button className="primary" onClick={() => setExporting(true)}>
             Export IaC
           </button>

@@ -12,6 +12,8 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 
 The **Control coverage** view rates every in-scope control: **Enforced** or **Audited** by policy, **PIM** (no policy evaluates it, but Privileged Identity Management addresses it), **Manual only**, **Excluded (manual)** (with "Exclude manual-only controls") or **No policy**. Controls whose policies don't apply everywhere, because of an excluded scope or an exemption, are marked **partly** with the reasons, and each framework shows how many there are.
 
+**Compliance report** (top bar) downloads an Excel workbook for auditors: a summary with coverage per framework; every in-scope control with its status, "partly" exceptions, policies and PIM; every assignment with its mode, changes, excluded scopes and exemptions; every exemption with its reason, expiry and state (expired ones included); the overrides; and the privileged access settings, eligible groups and the controls PIM addresses.
+
 ## Privileged access
 
 The **Privileged access** view puts Owner, User Access Administrator, Role Based Access Control Administrator and Contributor under Microsoft Entra **Privileged Identity Management**: named groups are eligible for a role at a management group and activate it just in time, and every management group gets the same role settings. The profile comes from the selected frameworks (High for FedRAMP High, NIST 800-53 High, CMMC and CJIS; Standard otherwise) or is chosen:

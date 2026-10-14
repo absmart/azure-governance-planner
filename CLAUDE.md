@@ -11,7 +11,7 @@ Azure Governance Planner: a static, client-only React 18 + TypeScript + Vite app
 ```powershell
 npm install
 npm run dev                        # Vite dev server, http://localhost:5173
-npm test                           # vitest run (src/lib/*.test.ts)
+npm test                           # vitest run: src/lib/*.test.ts and the jsdom UI tests
 npx vitest run src/lib/iac.test.ts # one file
 npx vitest run -t "Azure Government"  # tests whose name matches
 npm run build                      # tsc (strict, noUnusedLocals/Parameters) then vite build → dist/
@@ -42,7 +42,7 @@ The app is hosted on Azure Static Web Apps (`swa-azure-governance-planner` in re
 
 ## Architecture
 
-All logic is pure functions in `src/lib/`, where every test lives; `src/components/` is UI over it. `App.tsx` holds the `DesignInput` and the export settings in `useState`; there is no state library.
+All logic is pure functions in `src/lib/`, where the logic tests live; `src/components/` is UI over it. [src/App.ui.test.tsx](src/App.ui.test.tsx) drives the whole app in jsdom (views, decisions, overrides and exemptions, designs, PIM, share links, export, report, compare) with the helpers in [src/test/dom.tsx](src/test/dom.tsx); [src/test/azureFixture.ts](src/test/azureFixture.ts) is the synthetic Resource Graph export both the compare and UI tests use. `App.tsx` holds the `DesignInput` and the export settings in `useState`; there is no state library.
 
 **Catalog** (`src/data/catalog.json`, types in `catalog.ts`): a committed snapshot built by `scripts/update-catalog.mjs` from AzAdvertizer's CSV exports (policy names, effects, roles, cloud availability, initiative members with reference IDs), the Azure/azure-policy regulatory initiatives (control mappings, effect parameters), the Azure Landing Zones library pinned to `ALZ_REF` (architecture, archetypes, assignments) and NIST OSCAL (800-53 titles and SP 800-53B baselines). Keys are short because it ships to the browser: `n` name, `e` effect, `a` allowed effects, `r` role GUIDs, `ng` not in Azure Government, `dp`/`pv` deprecated/preview. `Member.r` lists the initiative reference IDs a policy is included under (needed for exemptions and overrides). The ALZ custom definitions and assignment parameters, which only the export needs, go to `public/alz-library.json`, fetched by the export dialog on demand.
 
@@ -74,11 +74,12 @@ Terraform needs `azurerm ~> 4.0` and `azapi ~> 2.0`; `azapi` is only for the ten
   - The private DNS initiative builds zone IDs from `dnsZoneSubscriptionId`, `dnsZoneResourceGroupName` and `dnsZoneRegion`. Its per-zone placeholder IDs are dropped.
 - **Untested against live services.** PIM couldn't be tested because the dev tenant isn't onboarded (it needs Entra ID P2). Azure Government exports were checked only with `terraform validate` and Bicep builds, not a Government plan.
 - **Validated with real tools.** The Bicep DCRs, solutions, AMA identity and private DNS zones passed `az deployment group what-if` against `rg-azure-governance-planner` (read-only). Tenant-scope what-if needs rights the dev account doesn't have.
-- **UI checks.** `jsdom` isn't a dependency. For UI checks, install it with `npm i --no-save jsdom@25.0.1`, write a temporary `// @vitest-environment jsdom` test, then delete it and `npm prune`. jsdom's `Blob` has no `.text()`.
+- **UI tests.** `jsdom` is a pinned dev dependency; UI test files start with `// @vitest-environment jsdom`, and the rest run in Node. Use `src/test/dom.tsx`: `click` dispatches an event because SVG elements have no `.click()`, `setValue` goes through the native value setter so React sees the change, and `until` waits for async work (share links, the ALZ library fetch, which tests stub with `public/alz-library.json`). It also polyfills `Blob.text()`; jsdom has neither that nor `Blob.arrayBuffer()`, so read blobs with `.text()`. Never put real tenant data in fixtures.
 
 ## Conventions
 
 - Exact-pinned dependency versions in `package.json`.
 - Commit messages: a short imperative subject describing the user-visible change, with a body explaining what and why.
 - Default resource names follow `<appName>-<environment>-<region>-<int>-<resourceType>` (for example `management-prd-eus2-01-log`), as `NAME_DEFAULTS` in `iac.ts` does; never hand-write names that bypass it.
+- New UI behaviour gets a case in `App.ui.test.tsx`.
 - New export behaviour needs tests in `iac.test.ts`, coverage in the "everything" sample, and a pass through the tool checks above.

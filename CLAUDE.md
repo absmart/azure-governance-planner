@@ -80,6 +80,7 @@ Terraform needs `azurerm ~> 4.0` and `azapi ~> 2.0`; `azapi` is only for the ten
 ## Conventions
 
 - Exact-pinned dependency versions in `package.json`.
+- Add user-visible changes to `CHANGELOG.md` under the date (newest first, Added / Changed), in the same commit.
 - Commit messages: a short imperative subject describing the user-visible change, with a body explaining what and why.
 - Default resource names follow `<appName>-<environment>-<region>-<int>-<resourceType>` (for example `management-prd-eus2-01-log`), as `NAME_DEFAULTS` in `iac.ts` does; never hand-write names that bypass it.
 - New UI behaviour gets a case in `App.ui.test.tsx`.

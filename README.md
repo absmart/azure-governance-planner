@@ -13,6 +13,8 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 
 The **Cost** view estimates what the decisions cost to run each month: each Defender for Cloud plan, Log Analytics ingestion (less Defender for Servers' 500 MB per server a day), Azure Backup and DDoS Network Protection. Enter rough counts of the estate (servers, databases, storage accounts, GB a day); the top bar shows the total. Prices are approximate US pay-as-you-go list prices (in `src/lib/cost.ts`), before discounts and regional differences, so check the Azure pricing calculator before relying on them.
 
+What's changed, by date: [CHANGELOG.md](CHANGELOG.md).
+
 ## Control coverage
 
 The **Control coverage** view rates every in-scope control: **Enforced** or **Audited** by policy, **PIM** (no policy evaluates it, but Privileged Identity Management addresses it), **Manual only**, **Excluded (manual)** (with "Exclude manual-only controls") or **No policy**. Controls whose policies don't apply everywhere, because of an excluded scope or an exemption, are marked **partly** with the reasons, and each framework shows how many there are.

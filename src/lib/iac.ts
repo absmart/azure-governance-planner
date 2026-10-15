@@ -3166,9 +3166,13 @@ export function toTerraformImports(model: IacModel, existing: ExistingResources)
 export function generateIacFiles(format: IacFormat, model: IacModel, options: ExportOptions, migration?: MigrationExport): IacFile[] {
   const files = generateFormatFiles(format, model, options);
   if (!migration) return files;
+  // Terragrunt copies the files beside terragrunt.hcl into the module it runs, so the
+  // import blocks go there: one file per environment, in the root module as Terraform requires.
+  const imports =
+    format === 'terraform' ? 'imports.tf' : format === 'terragrunt' ? `${terragruntLiveDir(environmentOf(options))}/imports.tf` : null;
   return [
     ...files,
-    ...(format === 'terraform' ? [{ name: 'imports.tf', content: toTerraformImports(model, migration.existing), description: 'adopt existing resources' }] : []),
+    ...(imports ? [{ name: imports, content: toTerraformImports(model, migration.existing), description: 'adopt existing resources' }] : []),
     { name: 'MIGRATION.md', content: migration.plan, description: 'migration plan' },
   ];
 }

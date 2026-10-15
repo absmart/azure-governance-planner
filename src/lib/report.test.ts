@@ -4,6 +4,8 @@ import type { Catalog } from './catalog';
 import { DEFAULT_INPUT, buildDesign } from './engine';
 import { buildReport, reportFileName } from './report';
 import { columnName, createXlsx } from './xlsx';
+import { complianceFixture, fixture } from '../test/azureFixture';
+import { parseAzureImport } from './snapshot';
 
 const catalog = catalogJson as unknown as Catalog;
 const now = new Date('2026-10-13T12:00:00Z');
@@ -41,6 +43,27 @@ describe('compliance report', () => {
   it('reports overrides and the PIM settings', () => {
     expect(sheet('Overrides').rows[1]).toEqual(['Landing zones', 'Deny-IP-forwarding', 'DoNotEnforce', '', '', '']);
     expect(sheet('Privileged access').rows.some((r) => r[0] === 'Longest activation')).toBe(true);
+  });
+
+  it('adds the compliance in Azure from an import with compliance state', () => {
+    const azure = parseAzureImport([fixture(), complianceFixture()], catalog, 'Contoso tenant', now);
+    const withAzure = buildReport(catalog, design, now, azure);
+    expect(withAzure.map((s) => s.name)).toEqual(['Summary', 'Compliance in Azure', 'Controls', 'Assignments', 'Exemptions', 'Overrides', 'Privileged access']);
+    const summary = withAzure.find((s) => s.name === 'Summary')!.rows;
+    expect(summary.find((r) => r[0] === 'Azure compliance state')![1]).toBe('Contoso tenant, imported 2026-10-13 12:00 UTC');
+    const nistRow = summary.find((r) => r[0] === design.coverage[0].name && r.length === 5)!;
+    const rows = withAzure.find((s) => s.name === 'Compliance in Azure')!.rows;
+    expect(rows[0]).toEqual(['Framework', 'Family', 'Control', 'Title', 'Design status', 'Azure compliance', 'Non-compliant resources', 'Compliant resources', 'Failing policies']);
+    const nist = rows.slice(1).filter((r) => r[0] === design.coverage[0].short);
+    expect(nist).toHaveLength(nistRow[1] as number);
+    expect(nist.filter((r) => r[5] === 'Non-compliant')).toHaveLength(nistRow[3] as number);
+    expect(nist.find((r) => r[5] === 'Non-compliant')![8]).toMatch(/\(3\)$/);
+  });
+
+  it('says when the import has no compliance state, and leaves the sheet out', () => {
+    const withAzure = buildReport(catalog, design, now, parseAzureImport(fixture(), catalog, 'Contoso tenant', now));
+    expect(withAzure.map((s) => s.name)).not.toContain('Compliance in Azure');
+    expect(withAzure[0].rows.find((r) => r[0] === 'Azure compliance state')![1]).toMatch(/no compliance state/);
   });
 
   it('names the file after the design', () => {

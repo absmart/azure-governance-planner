@@ -17,6 +17,7 @@ import {
   type DesignInput,
 } from './engine';
 import { familyOf } from './families';
+import { initiativeMembers, type InitiativeIndex, type PolicyIndex } from './policyIndex';
 
 const catalog = catalogJson as unknown as Catalog;
 const design = (overrides: Partial<DesignInput> = {}) => buildDesign(catalog, { ...DEFAULT_INPUT, ...overrides });
@@ -589,6 +590,24 @@ describe('custom assignments', () => {
     });
     expect(d.mgs.flatMap((m) => m.assignments).filter((a) => a.origin === 'custom')).toHaveLength(0);
     expect(d.notes.filter((n) => n.level === 'warning' && n.text.startsWith('Custom assignment'))).toHaveLength(3);
+  });
+
+  it('assigns any built-in initiative from the initiative index, with the details of policies the catalog lacks', () => {
+    const initiatives = JSON.parse(readFileSync(new URL('../../public/initiative-index.json', import.meta.url), 'utf8')) as InitiativeIndex;
+    // Linux machines: Azure Monitor Agent and a data collection rule. Not a framework or ALZ initiative.
+    const ama = '118f04da-0375-44d1-84e3-0fd9e1849403';
+    expect(knownInitiatives(catalog).some((i) => i.id === ama)).toBe(false);
+    const { members, infos } = initiativeMembers(catalog, { generated: '', ...index } as PolicyIndex, initiatives.initiatives[ama]);
+    expect(members.length).toBe(new Set(initiatives.initiatives[ama].m.map((m) => m[0])).size);
+    expect(Object.keys(infos).length).toBe(members.filter((m) => !catalog.policies[m.p]).length);
+    expect(Object.values(infos).every((i) => i.d === '')).toBe(true);
+
+    const d = design({ customAssignments: [custom({ kind: 'initiative', definition: ama, name: 'Deploy-AMA-Linux', displayName: '', info: undefined, members, infos })] });
+    const a = find(d, 'Deploy-AMA-Linux')!.a;
+    expect(a).toMatchObject({ kind: 'initiative', identity: true, definitionId: `/providers/Microsoft.Authorization/policySetDefinitions/${ama}` });
+    expect(a.policies.map((m) => m.p).sort()).toEqual(members.map((m) => m.p).sort());
+    const merged = withCustomPolicies(catalog, d.input.customAssignments);
+    for (const m of members) expect(merged.policies[m.p]?.n, m.p).toBeTruthy();
   });
 
   it('can be overridden and exempted like any assignment', () => {

@@ -1,9 +1,12 @@
 // Compliance report for auditors: the design's control coverage, assignments,
-// exemptions, overrides and privileged access, as workbook sheets.
+// exemptions, overrides and privileged access, as workbook sheets; and, with an
+// Azure import that has compliance state, how compliant the tenant is per control.
 
 import type { Catalog } from './catalog';
+import { snapshotCoverage, type ControlComplianceState } from './compare';
 import { exemptionExpiry, type Design, type DesignInput, type ScopeRef } from './engine';
 import { pimRoles } from './pim';
+import { policyLabel, type PolicySnapshot } from './snapshot';
 import type { Cell, Sheet } from './xlsx';
 
 const STATUS: Record<string, string> = {
@@ -22,7 +25,18 @@ export function reportFileName(input: DesignInput, now = new Date()): string {
   return `${slug}-compliance-report-${now.toISOString().slice(0, 10)}.xlsx`;
 }
 
-export function buildReport(catalog: Catalog, design: Design, now = new Date()): Sheet[] {
+const COMPLIANCE: Record<ControlComplianceState, string> = {
+  compliant: 'Compliant',
+  noncompliant: 'Non-compliant',
+  notEvaluated: 'Not evaluated',
+};
+
+/**
+ * The report's sheets. With an Azure import (`azure`) that has compliance
+ * state, the summary says where it came from and a "Compliance in Azure" sheet
+ * rates every in-scope control by the resources its policies evaluated there.
+ */
+export function buildReport(catalog: Catalog, design: Design, now = new Date(), azure?: PolicySnapshot): Sheet[] {
   const input = design.input;
   const mgName = (role: string) => design.mgs.find((m) => m.role === role)?.displayName ?? role;
   const scope = (s: ScopeRef) =>
@@ -158,8 +172,55 @@ export function buildReport(catalog: Catalog, design: Design, now = new Date()):
       ]
     : [['Setting', 'Value'], ['Privileged Identity Management', 'Off']];
 
+  // Compliance in Azure, per framework of the design, for the controls the design has in scope.
+  const compliance = azure?.compliance
+    ? design.coverage.map((c) => ({
+        c,
+        cov: snapshotCoverage(catalog, azure, c.key, { baseline: input.nistBaseline, privacy: input.nistPrivacy })!,
+      }))
+    : [];
+  if (azure)
+    summary.push(
+      [],
+      ['Azure compliance state', azure.compliance ? `${azure.label}, imported ${(azure.importedAt ?? '').slice(0, 16).replace('T', ' ')} UTC` : `${azure.label} has no compliance state (import it again with query 3)`],
+      ...(compliance.length
+        ? [
+            ['Framework', 'Controls with automated policies', 'Compliant', 'Non-compliant', 'Not evaluated'] as Cell[],
+            ...compliance.map(({ c, cov }) => {
+              const k = cov.compliance!.counts;
+              return [c.name, k.compliant + k.noncompliant + k.notEvaluated, k.compliant, k.noncompliant, k.notEvaluated] as Cell[];
+            }),
+          ]
+        : []),
+    );
+  const complianceRows: Cell[][] = [
+    ['Framework', 'Family', 'Control', 'Title', 'Design status', 'Azure compliance', 'Non-compliant resources', 'Compliant resources', 'Failing policies'],
+    ...compliance.flatMap(({ c, cov }) =>
+      c.families.flatMap((f) =>
+        f.controls.flatMap((x) => {
+          const state = cov.compliance!.controls.get(x.id);
+          if (!state) return [];
+          return [
+            [
+              c.short,
+              `${f.code} ${f.title}`.trim(),
+              x.id,
+              x.title ?? '',
+              STATUS[x.status],
+              COMPLIANCE[state.state],
+              state.nonCompliant,
+              state.compliant,
+              state.failing.map((p) => `${policyLabel(catalog, p.p)} (${p.nonCompliant})`).join('; '),
+            ] as Cell[],
+          ];
+        }),
+      ),
+    ),
+  ];
+
   return [
     { name: 'Summary', rows: summary, widths: [32, 60, 10, 10, 8, 12, 18, 10, 14, 16] },
+    ...(compliance.length ? [{ name: 'Compliance in Azure', rows: complianceRows }] : []),
     { name: 'Controls', rows: controls },
     { name: 'Assignments', rows: assignments },
     { name: 'Exemptions', rows: exemptionRows },

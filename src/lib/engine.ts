@@ -244,6 +244,10 @@ export interface CustomAssignment {
   definition: string;
   /** A built-in policy the catalog doesn't carry: its details, from the policy index. */
   info?: PolicyInfo;
+  /** A built-in initiative the catalog doesn't know: its policies, from the initiative index. */
+  members?: Member[];
+  /** Those of its policies the catalog doesn't carry, from the policy index. */
+  infos?: Record<string, PolicyInfo>;
   enforcementMode: 'Default' | 'DoNotEnforce';
   /** Parameter values by name; a string "effect" sets the policy's effect. */
   parameters: Record<string, unknown>;
@@ -273,9 +277,13 @@ export function knownInitiatives(catalog: Catalog): KnownInitiative[] {
 
 /** The catalog plus the policies custom assignments brought from the policy index. */
 export function withCustomPolicies(catalog: Catalog, custom: CustomAssignment[] | undefined): Catalog {
-  const extra = (custom ?? []).filter((c) => c.info && !catalog.policies[c.definition]);
-  if (!extra.length) return catalog;
-  return { ...catalog, policies: { ...catalog.policies, ...Object.fromEntries(extra.map((c) => [c.definition, c.info!])) } };
+  const extra: Record<string, PolicyInfo> = {};
+  for (const c of custom ?? []) {
+    if (c.info && !catalog.policies[c.definition]) extra[c.definition] = c.info;
+    for (const [p, info] of Object.entries(c.infos ?? {})) if (!catalog.policies[p]) extra[p] = info;
+  }
+  if (!Object.keys(extra).length) return catalog;
+  return { ...catalog, policies: { ...catalog.policies, ...extra } };
 }
 
 /** The value of a parameter named "effect" (any case), when it's a string. */
@@ -831,7 +839,9 @@ export function buildDesign(baseCatalog: Catalog, input: DesignInput, now = new 
     let definitionName: string;
     let description: string;
     if (c.kind === 'initiative') {
-      const known = initiatives.get(c.definition.toLowerCase());
+      const known =
+        initiatives.get(c.definition.toLowerCase()) ??
+        (c.members?.length ? { id: c.definition, name: c.displayName || c.name, description: '', policies: c.members } : undefined);
       if (!known) {
         notes.push({ level: 'warning', text: `Custom assignment "${label}": initiative ${c.definition} isn't in the catalog, so it's left out.` });
         continue;

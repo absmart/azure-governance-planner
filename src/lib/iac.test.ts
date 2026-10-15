@@ -6,6 +6,7 @@ import type { Catalog, PolicyInfo } from './catalog';
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './engine';
 import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, manualPolicyCount, toTerraformImports, unsetInputs } from './iac';
 import { buildMigrationPlan, migrationMarkdown } from './migration';
+import { initiativeMembers, type InitiativeIndex, type PolicyIndex } from './policyIndex';
 import { complianceFixture, fixture } from '../test/azureFixture';
 import { parseAzureImport } from './snapshot';
 import { DEFAULT_PIM } from './pim';
@@ -17,6 +18,10 @@ const policyIndex = JSON.parse(readFileSync(new URL('../../public/policy-index.j
 /** A DeployIfNotExists built-in only the policy index has (role 85cb6faf, Arc Kubernetes extension contributor). */
 const ARC_POLICY = '0adc5395-9169-4b9b-8687-af838d69410a';
 const ISO = catalog.frameworks.find((f) => f.key === 'iso-27001-2022')!;
+/** A built-in initiative only the initiative index has (Linux machines: Azure Monitor Agent and a DCR). */
+const AMA_INITIATIVE = '118f04da-0375-44d1-84e3-0fd9e1849403';
+const initiativeIndex = JSON.parse(readFileSync(new URL('../../public/initiative-index.json', import.meta.url), 'utf8')) as InitiativeIndex;
+const amaMembers = initiativeMembers(catalog, { generated: '', ...policyIndex } as PolicyIndex, initiativeIndex.initiatives[AMA_INITIATIVE]);
 
 /** Inputs the templates fill from the platform resources they create. */
 const CREATED = new Set([
@@ -61,6 +66,17 @@ const everything: Partial<DesignInput> = {
       parameters: {},
     },
     { id: 'iso', mg: 'online', name: 'Audit-ISO-Online', displayName: '', kind: 'initiative', definition: ISO.id, enforcementMode: 'Default', parameters: {} },
+    {
+      id: 'ama',
+      mg: 'landingzones',
+      name: 'Deploy-AMA-Linux',
+      displayName: 'Linux machines: Azure Monitor Agent',
+      kind: 'initiative',
+      definition: AMA_INITIATIVE,
+      ...amaMembers,
+      enforcementMode: 'DoNotEnforce',
+      parameters: {},
+    },
   ],
   exemptions: [
     {
@@ -562,6 +578,11 @@ describe('custom assignments in the export', () => {
     const arc = m.assignments.find((a) => a.name === 'Deploy-Arc-Policy')!;
     expect(arc).toMatchObject({ managementGroupId: 'contoso-corp', policyDefinitionId: `/providers/Microsoft.Authorization/policyDefinitions/${ARC_POLICY}`, identity: true });
     expect(arc.roleDefinitionIds.map((r) => r.split('/').pop())).toEqual(policyIndex.policies[ARC_POLICY].r);
+    const ama = m.assignments.find((a) => a.name === 'Deploy-AMA-Linux')!;
+    const roles = new Set(amaMembers.members.flatMap((x) => (catalog.policies[x.p] ?? amaMembers.infos[x.p])?.r ?? []));
+    expect(roles.size).toBeGreaterThan(0);
+    expect(new Set(ama.roleDefinitionIds.map((r) => r.split('/').pop()))).toEqual(roles);
+    expect(ama).toMatchObject({ identity: true, enforcementMode: 'DoNotEnforce', policyDefinitionId: `/providers/Microsoft.Authorization/policySetDefinitions/${AMA_INITIATIVE}` });
     const iso = m.assignments.find((a) => a.name === 'Audit-ISO-Online')!;
     expect(iso.policyDefinitionId).toBe(`/providers/Microsoft.Authorization/policySetDefinitions/${ISO.id}`);
   });
@@ -587,10 +608,12 @@ describe('migration exports', () => {
     expect(imports.match(/^import \{/gm)).toHaveLength(5);
   });
 
-  it('adds imports.tf (Terraform) and MIGRATION.md to a migration phase export', () => {
+  it('adds imports.tf (Terraform, and beside each Terragrunt environment) and MIGRATION.md to a migration phase export', () => {
     const migration = { plan: migrationMarkdown(plan), existing: plan.existing };
     const names = (f: IacFormat) => generateIacFiles(f, m, { environment: 'prd', values: {} }, migration).map((x) => x.name);
     expect(names('terraform')).toEqual(expect.arrayContaining(['imports.tf', 'MIGRATION.md']));
+    expect(names('terragrunt')).toEqual(expect.arrayContaining(['live/prd/governance/imports.tf', 'MIGRATION.md']));
+    expect(names('terragrunt').filter((n) => n.endsWith('imports.tf'))).toHaveLength(1);
     expect(names('bicep')).toContain('MIGRATION.md');
     expect(names('bicep')).not.toContain('imports.tf');
     expect(generateIacFiles('terraform', m, { environment: 'prd', values: {} }).map((x) => x.name)).not.toContain('imports.tf');
@@ -624,13 +647,15 @@ describe('generateIacFiles', () => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, f.content);
       }
-    // A Terraform migration phase against the synthetic tenant, with import blocks.
+    // Migration phases against the synthetic tenant, with import blocks (Terraform and Terragrunt).
     const plan = buildMigrationPlan(buildDesign(catalog, { ...DEFAULT_INPUT, ...everything }), 'Everything', parseAzureImport([fixture(), complianceFixture()], catalog));
-    for (const f of generateIacFiles('terraform', m, options, { plan: migrationMarkdown(plan), existing: { ...plan.existing, assignments: ['contoso-landingzones/deny-ip-forwarding'] } })) {
-      const path = join(out!, 'terraform-migration', f.name);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, f.content);
-    }
+    const migration = { plan: migrationMarkdown(plan), existing: { ...plan.existing, assignments: ['contoso-landingzones/deny-ip-forwarding'] } };
+    for (const format of ['terraform', 'terragrunt'] as const)
+      for (const f of generateIacFiles(format, m, options, migration)) {
+        const path = join(out!, `${format}-migration`, f.name);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, f.content);
+      }
   });
 });
 

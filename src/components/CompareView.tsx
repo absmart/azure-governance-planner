@@ -41,7 +41,7 @@ const COMPLIANCE_LABEL: Record<ControlComplianceState, string> = {
 };
 
 /** How compliant an imported tenant is, per control of the framework. */
-function ComplianceSummary(props: { catalog: Catalog; label: string; coverage: SnapshotCoverage }) {
+function ComplianceSummary(props: { catalog: Catalog; label: string; coverage: SnapshotCoverage; onReport?: () => void }) {
   const { catalog, label, coverage } = props;
   const [all, setAll] = useState(false);
   const c = coverage.compliance!;
@@ -54,6 +54,11 @@ function ComplianceSummary(props: { catalog: Catalog; label: string; coverage: S
         From the last policy evaluation, for the {coverage.short} controls with automated policies. A control is non-compliant when any
         resource fails one of its assigned policies.
       </p>
+      {props.onReport && (
+        <p>
+          <button onClick={props.onReport}>Compliance report with this import (.xlsx)</button>
+        </p>
+      )}
       <p className="compliance-counts">
         {(Object.keys(COMPLIANCE_LABEL) as ControlComplianceState[]).map((s) => (
           <span key={s} className={`chip compliance-${s}`}>
@@ -160,6 +165,8 @@ export function CompareView(props: {
   onExportMigration: (design: Design, migration: MigrationExport & { title: string }) => void;
   /** Sets the current design's prefix. */
   onUsePrefix: (prefix: string) => void;
+  /** Downloads the compliance report for the current design with an import's compliance state. */
+  onReport: (azure: PolicySnapshot) => void;
 }) {
   const { catalog, design, input, designs, imports } = props;
   const options = [
@@ -402,11 +409,21 @@ export function CompareView(props: {
                   </tbody>
                 </table>
               </div>
-              {[
-                [a.label, covA],
-                [b.label, covB],
-              ].map(([label, c]) =>
-                (c as SnapshotCoverage).compliance ? <ComplianceSummary key={label as string} catalog={catalog} label={label as string} coverage={c as SnapshotCoverage} /> : null,
+              {(
+                [
+                  [a, covA],
+                  [b, covB],
+                ] as const
+              ).map(([side, c]) =>
+                c.compliance ? (
+                  <ComplianceSummary
+                    key={side.label}
+                    catalog={catalog}
+                    label={side.label}
+                    coverage={c}
+                    onReport={side.kind === 'azure' ? () => props.onReport(side) : undefined}
+                  />
+                ) : null,
               )}
               <h3 className="section-label">{diffs.length} controls rated differently</h3>
               {diffs.length > 0 && (

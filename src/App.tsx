@@ -184,6 +184,11 @@ export default function App() {
     return () => window.removeEventListener('hashchange', open);
   }, []);
 
+  /** The most recent Azure import with compliance state, for the report. */
+  const latestCompliance = [...azureImports].reverse().find((s) => s.compliance);
+  const downloadReport = (azure?: PolicySnapshot) =>
+    downloadFile(reportFileName(input), createXlsx(buildReport(catalog, design, new Date(), azure)), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
   const reset = () => {
     if (window.confirm('Start a new design from the default NIST 800-53 example? Saved designs are kept.')) newDesign();
   };
@@ -223,14 +228,10 @@ export default function App() {
             Share
           </button>
           <button
-            title="Download the control coverage, assignments, exemptions, overrides and privileged access as an Excel workbook"
-            onClick={() =>
-              downloadFile(
-                reportFileName(input),
-                createXlsx(buildReport(catalog, design)),
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-              )
-            }
+            title={`Download the control coverage, assignments, exemptions, overrides and privileged access as an Excel workbook${
+              latestCompliance ? `, with the compliance in Azure from "${latestCompliance.label}"` : ''
+            }`}
+            onClick={() => downloadReport(latestCompliance)}
           >
             Compliance report
           </button>
@@ -307,6 +308,7 @@ export default function App() {
               onImportsChange={setAzureImports}
               onExportMigration={(d, migration) => setMigrationExport({ design: d, migration })}
               onUsePrefix={(prefix) => setInput({ ...input, prefix })}
+              onReport={downloadReport}
             />
           )}
           <footer className="muted">

@@ -122,11 +122,9 @@ export function ExportDialog(props: {
               <ul className="issues">
                 <li className="info">
                   A migration phase: MIGRATION.md has the whole plan.{' '}
-                  {settings.format === 'terraform'
-                    ? `imports.tf adopts the ${props.migration.existing.managementGroups.length} management groups and ${props.migration.existing.assignments.length} assignments that already exist.`
-                    : settings.format === 'terragrunt'
-                      ? 'Terragrunt: the Terraform export has imports.tf to adopt what already exists; add its blocks to the module before the first apply.'
-                      : 'Bicep updates what already exists in place.'}
+                  {settings.format === 'bicep'
+                    ? 'Bicep updates what already exists in place.'
+                    : `${settings.format === 'terragrunt' ? "imports.tf, beside this environment's terragrunt.hcl," : 'imports.tf'} adopts the ${props.migration.existing.managementGroups.length} management groups and ${props.migration.existing.assignments.length} assignments that already exist.`}
                 </li>
               </ul>
             )}

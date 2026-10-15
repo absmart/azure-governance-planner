@@ -244,6 +244,27 @@ describe('custom assignments', () => {
     expect(allByText(c, 'tr.assignment', 'Deploy-Arc-Policy')).toHaveLength(0);
   });
 
+  it('adds any built-in initiative, with its policies', async () => {
+    stubFetch();
+    const c = app();
+    click(byText(c, 'button.mg-node', 'Landing zones'));
+    click(byText(c, 'button', '+ Add an assignment'));
+    click(byText(c, '[aria-label="Definition kind"] button', 'Built-in initiative'));
+    setValue(c.querySelector('input[aria-label="Search definitions"]')!, 'Linux machines to run Azure Monitor Agent and associate them to a Data Collection Rule');
+    // Not a catalog initiative, so it shows once the initiative index loads.
+    const result = await until(() => allByText<HTMLButtonElement>(c, '.definition-results button', /^Configure Linux machines to run Azure Monitor Agent and associate them to a Data Collection Rule$/)[0]);
+    click(result);
+    await until(() => !c.textContent!.includes('Loading every built-in policy'));
+    setValue(c.querySelector('input[aria-label="Assignment name"]')!, 'Deploy-AMA-Linux');
+    click(byText(c, 'button', /^Add assignment$/));
+
+    const [added] = loadInput().customAssignments;
+    expect(added).toMatchObject({ mg: 'landingzones', kind: 'initiative', definition: '118f04da-0375-44d1-84e3-0fd9e1849403' });
+    expect(added.members!.length).toBeGreaterThan(1);
+    expect(Object.keys(added.infos ?? {}).length).toBeGreaterThan(0);
+    expect(byText(c, 'tr.assignment', 'Deploy-AMA-Linux').textContent).toContain(String(added.members!.length));
+  });
+
   it('checks the name', async () => {
     stubFetch();
     const c = app();
@@ -290,6 +311,15 @@ describe('migration plan', () => {
     const plan = byText(c, 'section.migration', 'Migration plan');
     expect(plan.textContent).toContain('5. Clean up');
     expect(byText(plan, '.migration-steps li', 'Remove').textContent).toContain('az policy assignment delete');
+
+    // The compliance report can include this import's compliance state.
+    let blob: Blob | undefined;
+    URL.createObjectURL = vi.fn((b: Blob) => ((blob = b), 'blob:report'));
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    click(byText(c, 'button', 'Compliance report with this import (.xlsx)'));
+    expect(await blob!.text()).toContain('Compliance in Azure');
+    expect(byText(c, '.topbar button', 'Compliance report').title).toMatch(/with the compliance in Azure from "Azure[^"]*"/);
 
     click(byText(plan, 'button', 'Export phases 1–2 (audit first)'));
     const exp = c.querySelector('[role="dialog"][aria-label="Export IaC"]')!;

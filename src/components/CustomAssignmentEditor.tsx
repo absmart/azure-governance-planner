@@ -8,12 +8,34 @@ import {
   type DesignInput,
   type PlannedMg,
 } from '../lib/engine';
-import { loadPolicyIndex, searchPolicies, type PolicyIndex } from '../lib/policyIndex';
+import catalogJson from '../data/catalog.json';
+import {
+  initiativeMembers,
+  loadInitiativeIndex,
+  loadPolicyIndex,
+  searchInitiatives,
+  searchPolicies,
+  type IndexedInitiative,
+  type InitiativeIndex,
+  type PolicyIndex,
+} from '../lib/policyIndex';
+
+/** The catalog as shipped: a custom assignment stores the details of policies it doesn't carry. */
+const baseCatalog = catalogJson as unknown as Catalog;
+
+interface Result {
+  id: string;
+  name: string;
+  detail: string;
+  info?: PolicyInfo;
+  /** An initiative from the initiative index (not one the catalog knows). */
+  indexed?: IndexedInitiative;
+}
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,23}$/;
 let customSeq = 0;
 
-/** Adds an assignment of any built-in policy, or a built-in initiative the catalog knows, to a management group. */
+/** Adds an assignment of any built-in policy or initiative to a management group. */
 export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: DesignInput; onChange: (input: DesignInput) => void }) {
   const { catalog, mg, input, onChange } = props;
   const [open, setOpen] = useState(false);
@@ -21,7 +43,8 @@ export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: D
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState<PolicyIndex | null>(null);
   const [indexError, setIndexError] = useState<string | null>(null);
-  const [picked, setPicked] = useState<{ id: string; name: string; info?: PolicyInfo } | null>(null);
+  const [initiativeIndex, setInitiativeIndex] = useState<InitiativeIndex | null>(null);
+  const [picked, setPicked] = useState<Result | null>(null);
   const [name, setName] = useState('');
   const [effect, setEffect] = useState('');
   const [enforcementMode, setEnforcementMode] = useState<CustomAssignment['enforcementMode']>('Default');
@@ -39,15 +62,33 @@ export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: D
     };
   }, [open, index]);
 
+  useEffect(() => {
+    if (!open || kind !== 'initiative' || initiativeIndex) return;
+    let current = true;
+    loadInitiativeIndex()
+      .then((i) => current && setInitiativeIndex(i))
+      .catch((e: Error) => current && setIndexError(e.message));
+    return () => {
+      current = false;
+    };
+  }, [open, kind, initiativeIndex]);
+
   const initiatives = useMemo(() => knownInitiatives(catalog), [catalog]);
   const q = query.trim().toLowerCase();
-  const results =
+  const known = new Set(initiatives.map((i) => i.id.toLowerCase()));
+  const results: Result[] =
     kind === 'policy'
       ? searchPolicies(catalog, index, query).map((r) => ({ id: r.id, name: r.info.n, detail: `${r.info.c} · ${r.info.e}${r.info.dp ? ' · deprecated' : ''}`, info: r.info }))
-      : initiatives
-          .filter((i) => q && `${i.name} ${i.id}`.toLowerCase().includes(q))
-          .slice(0, 50)
-          .map((i) => ({ id: i.id, name: i.name, detail: `${i.policies.length} policies`, info: undefined }));
+      : [
+          ...initiatives
+            .filter((i) => q && q.split(/\s+/).every((w) => `${i.name} ${i.id}`.toLowerCase().includes(w)))
+            .map((i) => ({ id: i.id, name: i.name, detail: `${i.policies.length} policies` })),
+          ...searchInitiatives(initiativeIndex, query)
+            .filter((r) => !known.has(r.id.toLowerCase()))
+            .map((r) => ({ id: r.id, name: r.initiative.n, detail: `${r.initiative.c} · ${new Set(r.initiative.m.map((m) => m[0])).size} policies`, indexed: r.initiative })),
+        ]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .slice(0, 50);
 
   const reset = () => {
     setPicked(null);
@@ -59,7 +100,7 @@ export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: D
     setError(null);
   };
 
-  const pick = (r: { id: string; name: string; info?: PolicyInfo }) => {
+  const pick = (r: Result) => {
     setPicked(r);
     setName(assignmentName(r.name));
     setEffect('');
@@ -81,6 +122,8 @@ export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: D
       }
     }
     if (effect) parameters = { ...parameters, effect };
+    if (picked.indexed && !index) return setError('Still loading the policy list; try again in a moment.');
+    const fromIndex = picked.indexed ? initiativeMembers(baseCatalog, index, picked.indexed) : null;
     const custom: CustomAssignment = {
       id: `${Date.now().toString(36)}${(customSeq++).toString(36)}`,
       mg: mg.role,
@@ -89,6 +132,7 @@ export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: D
       kind,
       definition: picked.id,
       ...(picked.info ? { info: picked.info } : {}),
+      ...(fromIndex ? { members: fromIndex.members, ...(Object.keys(fromIndex.infos).length ? { infos: fromIndex.infos } : {}) } : {}),
       enforcementMode,
       parameters,
     };
@@ -137,8 +181,9 @@ export function AddAssignment(props: { catalog: Catalog; mg: PlannedMg; input: D
           </div>
           {kind === 'policy' && !index && !indexError && <p className="muted">Loading every built-in policy… (searching the catalog's meanwhile)</p>}
           {indexError && <p className="error-text">Couldn't load the full policy list ({indexError}); searching the catalog's policies only.</p>}
+          {kind === 'initiative' && !initiativeIndex && !indexError && <p className="muted">Loading every built-in initiative… (searching the catalog's meanwhile)</p>}
           {kind === 'initiative' && (
-            <p className="muted">The initiatives the catalog knows the policies of: the frameworks, the sovereignty baselines and ALZ's built-in initiatives.</p>
+            <p className="muted">Coverage counts an initiative's policies with their default effects; set its parameters below to change what it deploys.</p>
           )}
           {results.length > 0 && (
             <ul className="definition-results">

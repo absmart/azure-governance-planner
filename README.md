@@ -7,7 +7,7 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 - each selected framework's built-in regulatory compliance initiative, in audit mode;
 - a custom enforcement initiative of the framework's Deny-capable policies for landing zones (what-if or enforced, depending on the posture);
 - assignments for decisions such as allowed locations, required tags and confidential landing zones;
-- assignments you add yourself: **+ Add an assignment** on any management group assigns any built-in policy (all of them, searched by name, category or ID, with its effect, enforcement and parameters) or a built-in initiative the catalog knows. They're overridden, exempted, covered and exported like the rest.
+- assignments you add yourself: **+ Add an assignment** on any management group assigns any built-in policy or initiative (all of them, searched by name, category or ID), with its effect, enforcement and parameters. An initiative's policies count with their default effects. They're overridden, exempted, covered and exported like the rest.
 
 ## Cost
 
@@ -17,7 +17,7 @@ The **Cost** view estimates what the decisions cost to run each month: each Defe
 
 The **Control coverage** view rates every in-scope control: **Enforced** or **Audited** by policy, **PIM** (no policy evaluates it, but Privileged Identity Management addresses it), **Manual only**, **Excluded (manual)** (with "Exclude manual-only controls") or **No policy**. Controls whose policies don't apply everywhere, because of an excluded scope or an exemption, are marked **partly** with the reasons, and each framework shows how many there are.
 
-**Compliance report** (top bar) downloads an Excel workbook for auditors: a summary with coverage per framework; every in-scope control with its status, "partly" exceptions, policies and PIM; every assignment with its mode, changes, excluded scopes and exemptions; every exemption with its reason, expiry and state (expired ones included); the overrides; and the privileged access settings, eligible groups and the controls PIM addresses.
+**Compliance report** (top bar) downloads an Excel workbook for auditors: a summary with coverage per framework; every in-scope control with its status, "partly" exceptions, policies and PIM; every assignment with its mode, changes, excluded scopes and exemptions; every exemption with its reason, expiry and state (expired ones included); the overrides; and the privileged access settings, eligible groups and the controls PIM addresses. With an Azure import that has compliance state, it adds a **Compliance in Azure** sheet (every in-scope control's state in the tenant, non-compliant resources and failing policies) and a summary per framework: the top bar uses the latest such import, and Compare has a button for the one shown.
 
 ## Privileged access
 
@@ -48,7 +48,7 @@ The **Compare** view puts any two of these side by side: the current design, a s
 - **Assignments** are matched by definition (built-in ID, or custom name without an ALZ version suffix) and show where scope or enforcement differs; **management groups** are matched by ID.
 - **Compliance in Azure**: with the compliance state imported, each framework control is rated compliant, non-compliant or not evaluated from the resources its assigned policies last evaluated, with the failing policies and how many resources fail them.
 
-When one side is an Azure import and the other a design, a **migration plan** lists the steps from one to the other, in an order that reports before it blocks: (1) create the missing management groups; (2) add assignments, the ones that would block or remediate in DoNotEnforce first; (3) review compliance and fix or exempt the resources each enforcement would affect; (4) enforce, fewest affected resources first; (5) remove the assignments the design replaces or doesn't have (as `az policy assignment delete` commands, since the export never deletes). It exports phases 1-2 (the design with those assignments in DoNotEnforce) and phase 4 (the full design), each with the plan as `MIGRATION.md`; the Terraform export adds `imports.tf` with import blocks for the management groups, assignments and custom definitions that already exist, so Terraform adopts them. When none of the design's management groups exist but the tenant looks like ALZ, it offers the tenant's prefix.
+When one side is an Azure import and the other a design, a **migration plan** lists the steps from one to the other, in an order that reports before it blocks: (1) create the missing management groups; (2) add assignments, the ones that would block or remediate in DoNotEnforce first; (3) review compliance and fix or exempt the resources each enforcement would affect; (4) enforce, fewest affected resources first; (5) remove the assignments the design replaces or doesn't have (as `az policy assignment delete` commands, since the export never deletes). It exports phases 1-2 (the design with those assignments in DoNotEnforce) and phase 4 (the full design), each with the plan as `MIGRATION.md`; the Terraform export adds `imports.tf` with import blocks for the management groups, assignments and custom definitions that already exist, so Terraform adopts them; Terragrunt gets the same file beside the environment's `terragrunt.hcl`, which Terragrunt copies into the module it runs. When none of the design's management groups exist but the tenant looks like ALZ, it offers the tenant's prefix.
 
 Microsoft's hidden system assignments (`sys.*`) are left out unless you ask for them.
 
@@ -102,7 +102,7 @@ npx --yes @azure/static-web-apps-cli@2.0.2 deploy ./dist --env production
 
 ## Policy data
 
-`src/data/catalog.json`, `public/alz-library.json` (the ALZ definitions and assignment parameters, loaded only when exporting) and `public/policy-index.json` (every built-in policy, loaded when adding an assignment) are committed snapshots built by `npm run update-catalog` from:
+`src/data/catalog.json`, `public/alz-library.json` (the ALZ definitions and assignment parameters, loaded only when exporting) `public/policy-index.json` and `public/initiative-index.json` (every built-in policy and initiative, loaded when adding an assignment) are committed snapshots built by `npm run update-catalog` from:
 
 - [Azure/azure-policy](https://github.com/Azure/azure-policy) built-in initiatives
 - the [Azure Landing Zones library](https://github.com/Azure/Azure-Landing-Zones-Library) archetypes, assignments and custom definitions, pinned to a release (`ALZ_REF` in the script)

@@ -14,7 +14,8 @@
 // The hosted app is static, so the data is committed with the source. The ALZ
 // library's definitions and assignment parameters, which only the IaC export
 // needs, go to public/alz-library.json so the app loads them on demand, and
-// every built-in policy (for custom assignments) to public/policy-index.json.
+// every built-in policy and initiative (for custom assignments) to
+// public/policy-index.json and public/initiative-index.json.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -23,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 const out = fileURLToPath(new URL('../src/data/catalog.json', import.meta.url));
 const libraryOut = fileURLToPath(new URL('../public/alz-library.json', import.meta.url));
 const indexOut = fileURLToPath(new URL('../public/policy-index.json', import.meta.url));
+const initiativeIndexOut = fileURLToPath(new URL('../public/initiative-index.json', import.meta.url));
 
 const AZADVERTIZER = 'https://www.azadvertizer.net';
 const POLICY_REPO = 'https://raw.githubusercontent.com/Azure/azure-policy/master/built-in-policies/policySetDefinitions';
@@ -472,11 +474,32 @@ writeFileSync(libraryOut, JSON.stringify(library) + '\n');
 // Every built-in policy, for custom assignments: loaded when the picker opens.
 const policyIndexData = Object.fromEntries(
   policyRows
-    .filter((p) => p.policyType === 'BuiltIn' && /^[0-9a-f-]{36}$/i.test(p.policyId))
-    .map((p) => [p.policyId, policyInfo(p, undefined, 200)])
+    // Static: the manual-attestation built-ins the regulatory initiatives include. Some built-in IDs aren't valid hex.
+    .filter((p) => (p.policyType === 'BuiltIn' || p.policyType === 'Static') && /^[0-9a-z-]{36}$/i.test(p.policyId))
+    .map((p) => [p.policyId, { ...policyInfo(p, undefined, 200), t: 'BuiltIn' }])
     .sort(([a], [b]) => a.localeCompare(b)),
 );
 writeFileSync(indexOut, JSON.stringify({ generated: catalog.generated, policies: policyIndexData }) + '\n');
 console.log(`Wrote ${Object.keys(policyIndexData).length} built-in policies to ${indexOut}`);
+
+// Every built-in initiative with its members ([policy GUID, default effect, reference ID]), for custom assignments.
+const initiativeIndexData = Object.fromEntries(
+  [...initiativeInfo]
+    .filter(([id, info]) => info.initiativeType === 'BuiltIn' && /^[0-9a-z-]{36}$/i.test(id))
+    .map(([id, info]) => [
+      id,
+      {
+        n: info.initiativeName,
+        c: info.initiativeCategory,
+        v: info.initiativeVersion,
+        d: (info.initiativeDescription ?? '').slice(0, 200),
+        ...(info.initiativeAzUSGov === 'false' ? { ng: true } : {}),
+        m: initiativeMembers.get(id).map((m) => [m.initiativePolicyId, m.initiativePolicyEffectDefault || '', m.initiativePolicyReferenceId]),
+      },
+    ])
+    .sort(([a], [b]) => a.localeCompare(b)),
+);
+writeFileSync(initiativeIndexOut, JSON.stringify({ generated: catalog.generated, initiatives: initiativeIndexData }) + '\n');
+console.log(`Wrote ${Object.keys(initiativeIndexData).length} built-in initiatives to ${initiativeIndexOut}`);
 console.log(`Wrote ${alzDefinitions.size} ALZ policy definitions and ${alzSets.size} set definitions to ${libraryOut}`);
 console.log(`Wrote ${Object.keys(policies).length} policies, ${frameworks.length} frameworks to ${out}`);

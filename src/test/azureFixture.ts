@@ -111,3 +111,22 @@ export function fixture(): string {
   // As the commands write it: pages one after another, with az CLI noise in between.
   return `${JSON.stringify(page1, null, 2)}\nWARNING: some az CLI message\n${JSON.stringify(page2)}\n`;
 }
+
+/** Query 3's output: resources per policy definition and compliance state (fake counts). */
+export function complianceFixture(): string {
+  const row = (definitionId: string, compliant: number, nonCompliant: number, exempt = 0) => ({
+    id: `policystates:${definitionId.toLowerCase()}`,
+    name: definitionId.split('/').pop()!.toLowerCase(),
+    type: 'microsoft.policyinsights/policystatesummary',
+    properties: { policyDefinitionId: definitionId.toLowerCase(), compliant, nonCompliant, exempt },
+  });
+  return JSON.stringify({
+    totalRecords: 3,
+    count: 3,
+    data: [
+      row(builtIn(denyA), 10, 3, 1),
+      row(builtIn(denyB), 5, 0),
+      row(`${mg('contoso')}/providers/Microsoft.Authorization/policyDefinitions/My-Custom-Policy`, 0, 2),
+    ],
+  });
+}

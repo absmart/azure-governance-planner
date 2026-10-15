@@ -96,4 +96,5 @@ jobs:
           add-paths: |
             src/data/catalog.json
             public/alz-library.json
+            public/policy-index.json
             scripts/update-catalog.mjs

@@ -13,7 +13,8 @@
 //
 // The hosted app is static, so the data is committed with the source. The ALZ
 // library's definitions and assignment parameters, which only the IaC export
-// needs, go to public/alz-library.json so the app loads them on demand.
+// needs, go to public/alz-library.json so the app loads them on demand, and
+// every built-in policy (for custom assignments) to public/policy-index.json.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -21,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const out = fileURLToPath(new URL('../src/data/catalog.json', import.meta.url));
 const libraryOut = fileURLToPath(new URL('../public/alz-library.json', import.meta.url));
+const indexOut = fileURLToPath(new URL('../public/policy-index.json', import.meta.url));
 
 const AZADVERTIZER = 'https://www.azadvertizer.net';
 const POLICY_REPO = 'https://raw.githubusercontent.com/Azure/azure-policy/master/built-in-policies/policySetDefinitions';
@@ -135,27 +137,32 @@ for (const r of initiativeRows) {
   initiativeMembers.get(r.initiativeId).push(r);
 }
 
+/** A policy's catalog entry from its AzAdvertizer row. */
+function policyInfo(p, fallback, descriptionLength = 400) {
+  return {
+    n: p.policyName,
+    c: p.policyCategory,
+    e: p.policyEffect || fallback?.initiativePolicyEffectDefault || '',
+    a: effects(p.policyEffectAllowedValues || ''),
+    d: p.policyDescription.replace(/;\s/g, ', ').slice(0, descriptionLength),
+    v: p.policyVersion,
+    t: p.policyType === 'BuiltIn' ? 'BuiltIn' : 'ALZ',
+    ...(roleIds(p.policyRolesUsed).length ? { r: roleIds(p.policyRolesUsed) } : {}),
+    // Built-ins missing from Azure Government. Undated rows (the oldest built-ins) list
+    // only AzureCloud even when they are in Government, so only dated rows count.
+    ...(p.policyType === 'BuiltIn' && p.dateAdded && !/AzureUSGovernment/.test(p.cloudEnvs ?? '') ? { ng: true } : {}),
+    ...(p.policyPreview ? { pv: true } : {}),
+    ...(p.policyDeprecated ? { dp: true } : {}),
+  };
+}
+
 /** Policies referenced anywhere in the catalog, keyed by GUID (or ALZ name). */
 const policies = {};
 function usePolicy(id, fallback) {
   if (policies[id]) return;
   const p = policyIndex.get(id);
   if (p) {
-    policies[id] = {
-      n: p.policyName,
-      c: p.policyCategory,
-      e: p.policyEffect || fallback?.initiativePolicyEffectDefault || '',
-      a: effects(p.policyEffectAllowedValues || ''),
-      d: p.policyDescription.replace(/;\s/g, ', ').slice(0, 400),
-      v: p.policyVersion,
-      t: p.policyType === 'BuiltIn' ? 'BuiltIn' : 'ALZ',
-      ...(roleIds(p.policyRolesUsed).length ? { r: roleIds(p.policyRolesUsed) } : {}),
-      // Built-ins missing from Azure Government. Undated rows (the oldest built-ins) list
-      // only AzureCloud even when they are in Government, so only dated rows count.
-      ...(p.policyType === 'BuiltIn' && p.dateAdded && !/AzureUSGovernment/.test(p.cloudEnvs ?? '') ? { ng: true } : {}),
-      ...(p.policyPreview ? { pv: true } : {}),
-      ...(p.policyDeprecated ? { dp: true } : {}),
-    };
+    policies[id] = policyInfo(p, fallback);
   } else if (fallback) {
     policies[id] = {
       n: fallback.initiativePolicyName,
@@ -462,5 +469,14 @@ const library = {
 };
 mkdirSync(dirname(libraryOut), { recursive: true });
 writeFileSync(libraryOut, JSON.stringify(library) + '\n');
+// Every built-in policy, for custom assignments: loaded when the picker opens.
+const policyIndexData = Object.fromEntries(
+  policyRows
+    .filter((p) => p.policyType === 'BuiltIn' && /^[0-9a-f-]{36}$/i.test(p.policyId))
+    .map((p) => [p.policyId, policyInfo(p, undefined, 200)])
+    .sort(([a], [b]) => a.localeCompare(b)),
+);
+writeFileSync(indexOut, JSON.stringify({ generated: catalog.generated, policies: policyIndexData }) + '\n');
+console.log(`Wrote ${Object.keys(policyIndexData).length} built-in policies to ${indexOut}`);
 console.log(`Wrote ${alzDefinitions.size} ALZ policy definitions and ${alzSets.size} set definitions to ${libraryOut}`);
 console.log(`Wrote ${Object.keys(policies).length} policies, ${frameworks.length} frameworks to ${out}`);

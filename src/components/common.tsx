@@ -67,6 +67,7 @@ export const ORIGIN_LABEL: Record<PlannedAssignment['origin'], string> = {
   framework: 'Framework',
   decision: 'Decision',
   enforcement: 'Enforcement',
+  custom: 'Custom',
 };
 
 export function OriginBadge({ origin }: { origin: PlannedAssignment['origin'] }) {

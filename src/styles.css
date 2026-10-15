@@ -16,6 +16,7 @@
   --framework: #0f7b6c;
   --decision: #8764b8;
   --enforcement: #c4651c;
+  --custom: #a4262c;
   --error: #c50f1f;
   --error-bg: #fde7e9;
   --warning: #8a5a00;
@@ -43,6 +44,7 @@
     --framework: #3fbfa8;
     --decision: #a586d6;
     --enforcement: #e08a45;
+    --custom: #f1707b;
     --error: #ff8a95;
     --error-bg: #3d1a1e;
     --warning: #f2c94c;
@@ -400,6 +402,11 @@ td > .badge:first-child {
 .origin-enforcement {
   color: var(--enforcement);
   border-color: var(--enforcement);
+}
+
+.origin-custom {
+  color: var(--custom);
+  border-color: var(--custom);
 }
 
 .mode-enforced {
@@ -1531,4 +1538,129 @@ td.differs {
   margin-top: 8px;
   color: var(--text);
   font-size: 13px;
+}
+
+/* Custom assignments */
+button.add-assignment {
+  margin-top: 10px;
+}
+
+.add-assignment-editor .tabs {
+  flex: none;
+}
+
+.definition-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.definition-results li {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.definition-results li:last-child {
+  border-bottom: 0;
+}
+
+/* Compliance state from an Azure import */
+.compliance-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.compliance-noncompliant {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.chip.compliance-compliant {
+  color: var(--ok);
+}
+
+.chip.compliance-notEvaluated {
+  color: var(--muted);
+}
+
+/* Migration plan */
+.migration-phase {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.migration-phase summary {
+  cursor: pointer;
+}
+
+.migration-steps {
+  margin: 6px 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 6px;
+}
+
+.migration-steps .badge {
+  margin-left: 6px;
+}
+
+.migration-steps code.command {
+  display: block;
+  margin-top: 2px;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* Cost estimate */
+.cost-total {
+  margin-left: auto;
+  font-size: 14px;
+}
+
+.cost-quantities {
+  margin: 8px 0 12px;
+}
+
+.cost-table .cost-group th {
+  text-align: left;
+  background: var(--surface-2);
+}
+
+.cost-table .cost-group th.num {
+  text-align: right;
+}
+
+/* A reopened design that deploys differently from when it was saved */
+.design-changes {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-bg);
+}
+
+.design-changes p {
+  margin: 0 0 6px;
+}
+
+.design-changes h4 {
+  margin: 8px 0 2px;
+  font-size: 12px;
+}
+
+.design-changes ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
 }

@@ -6,7 +6,7 @@ import { DEFAULT_INPUT, buildDesign } from './engine';
 import { catalogPolicy, definitionKey, designSnapshot, jsonValues, parseAzureImport, parseCsv } from './snapshot';
 
 const catalog = catalogJson as unknown as Catalog;
-import { denyA, denyB, fixture, mg, nist, sub, tenant } from '../test/azureFixture';
+import { complianceFixture, denyA, denyB, fixture, mg, nist, sub, tenant } from '../test/azureFixture';
 
 describe('Azure import', () => {
   const s = parseAzureImport(fixture(), catalog, 'Tenant', new Date('2026-10-13T00:00:00Z'));
@@ -44,6 +44,34 @@ describe('Azure import', () => {
     expect(s.exemptions).toEqual([
       { assignment: 'Enforce-GR-Custom', scope: `subscription:${sub}`, category: 'Waiver', displayName: 'Legacy subscription', references: ['refA'], expiresOn: '2027-03-31' },
     ]);
+  });
+
+  it('reads the compliance state from query 3, or notes it is missing', () => {
+    const withState = parseAzureImport([fixture(), complianceFixture()], catalog);
+    expect(withState.compliance).toEqual({
+      [denyA]: { compliant: 10, nonCompliant: 3, exempt: 1 },
+      [denyB]: { compliant: 5, nonCompliant: 0, exempt: 0 },
+      'my-custom-policy': { compliant: 0, nonCompliant: 2, exempt: 0 },
+    });
+    expect(withState.notes.some((n) => n.includes('query 3'))).toBe(false);
+    expect(s.compliance).toBeUndefined();
+    expect(s.notes.some((n) => n.includes('query 3'))).toBe(true);
+    expect(withState.definitions).toContain(`${mg('contoso')}/providers/microsoft.authorization/policydefinitions/my-custom-policy`.toLowerCase());
+  });
+
+  it('rates each control by the compliance of its assigned policies', () => {
+    const withState = parseAzureImport([fixture(), complianceFixture()], catalog);
+    const cov = snapshotCoverage(catalog, withState, 'nist-800-53-r5')!;
+    const controlsOfA = nist.refs.filter((r) => r.p === denyA).flatMap((r) => r.g);
+    expect(controlsOfA.length).toBeGreaterThan(0);
+    for (const c of controlsOfA) {
+      const x = cov.compliance!.controls.get(c)!;
+      expect(x.state).toBe('noncompliant');
+      expect(x.failing[0]).toEqual({ p: denyA, nonCompliant: 3 });
+    }
+    const counts = cov.compliance!.counts;
+    expect(counts.compliant + counts.noncompliant + counts.notEvaluated).toBe(cov.compliance!.controls.size);
+    expect(snapshotCoverage(catalog, s, 'nist-800-53-r5')!.compliance).toBeUndefined();
   });
 
   it('rejects text with no Resource Graph rows', () => {

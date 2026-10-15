@@ -2,6 +2,7 @@
 // that can be reopened later, and a JSON backup format for exporting and
 // importing them.
 
+import type { DesignBaseline } from './baseline';
 import { DEFAULT_INPUT, type DesignInput } from './engine';
 import type { ExportSettings } from './iac';
 
@@ -12,6 +13,8 @@ export interface SavedDesign {
   savedAt: string;
   input: DesignInput;
   exportSettings: ExportSettings;
+  /** What the design deployed when saved (or last reviewed), to show what a catalog update changed. */
+  baseline?: DesignBaseline;
 }
 
 /** File format for exported designs. */
@@ -99,6 +102,11 @@ export function backupFileName(designs: SavedDesign[], now = new Date()): string
   return `governance-design-${slug}-${date}.json`;
 }
 
+const isBaseline = (value: unknown): value is DesignBaseline => {
+  const b = value as DesignBaseline;
+  return !!b && typeof b === 'object' && typeof b.catalog === 'string' && !!b.assignments && typeof b.assignments === 'object' && !!b.policies && typeof b.policies === 'object';
+};
+
 const isInput = (value: unknown): value is Partial<DesignInput> => {
   const i = value as DesignInput;
   return !!i && typeof i === 'object' && Array.isArray(i.frameworks) && typeof i.enforcement === 'string';
@@ -127,6 +135,7 @@ export function parseBackup(text: string, now = new Date()): SavedDesign[] {
       savedAt: typeof d.savedAt === 'string' ? d.savedAt : now.toISOString(),
       input: { ...input, name },
       exportSettings: migrateExportSettings(d.exportSettings),
+      ...(isBaseline(d.baseline) ? { baseline: d.baseline } : {}),
     };
   });
   if (designs.length === 0) throw new Error('The file has no designs.');

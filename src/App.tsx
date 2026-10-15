@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notes } from './components/common';
 import { CompareView } from './components/CompareView';
+import { CostView } from './components/CostView';
 import { Coverage } from './components/Coverage';
 import { Decisions } from './components/Decisions';
+import { DesignChangesNotice } from './components/DesignChangesNotice';
 import { DesignsDialog } from './components/DesignsDialog';
 import { ExportDialog } from './components/ExportDialog';
 import { Hierarchy } from './components/Hierarchy';
@@ -10,6 +12,7 @@ import { Policies } from './components/Policies';
 import { PrivilegedAccess } from './components/PrivilegedAccess';
 import { ShareDialog } from './components/ShareDialog';
 import catalogJson from './data/catalog.json';
+import { designBaseline, designChanges, type DesignChanges } from './lib/baseline';
 import type { Catalog } from './lib/catalog';
 import {
   DEFAULT_EXPORT_SETTINGS,
@@ -22,24 +25,26 @@ import {
   renameDesign,
   updateDesign,
 } from './lib/designs';
-import { DEFAULT_INPUT, buildDesign, type DesignInput } from './lib/engine';
-import type { ExportSettings } from './lib/iac';
+import { DEFAULT_INPUT, buildDesign, withCustomPolicies, type Design, type DesignInput } from './lib/engine';
+import type { ExportSettings, MigrationExport } from './lib/iac';
 import type { PolicySnapshot } from './lib/snapshot';
 import { decodeDesign, tokenFromHash } from './lib/share';
 import { STORAGE_KEYS, loadDesigns, loadExportSettings, loadInput, readJson, saveInput, writeJson } from './lib/storage';
 import { downloadFile } from './lib/download';
+import { estimateCost, formatUsd } from './lib/cost';
 import { buildReport, reportFileName } from './lib/report';
 import { createXlsx } from './lib/xlsx';
 
-const catalog = catalogJson as unknown as Catalog;
+const baseCatalog = catalogJson as unknown as Catalog;
 
-type View = 'hierarchy' | 'coverage' | 'policies' | 'pim' | 'compare';
+type View = 'hierarchy' | 'coverage' | 'policies' | 'pim' | 'cost' | 'compare';
 
 const VIEWS: { value: View; label: string }[] = [
   { value: 'hierarchy', label: 'Management groups' },
   { value: 'coverage', label: 'Control coverage' },
   { value: 'policies', label: 'Policies' },
   { value: 'pim', label: 'Privileged access' },
+  { value: 'cost', label: 'Cost' },
   { value: 'compare', label: 'Compare' },
 ];
 
@@ -49,6 +54,8 @@ export default function App() {
   const [view, setView] = useState<View>(() => readJson<View>(STORAGE_KEYS.view) ?? 'hierarchy');
   const [storageOk, setStorageOk] = useState(true);
   const [exporting, setExporting] = useState(false);
+  /** A migration phase being exported (from Compare). */
+  const [migrationExport, setMigrationExport] = useState<{ design: Design; migration: MigrationExport & { title: string } } | null>(null);
   const [showDesigns, setShowDesigns] = useState(false);
   const [sharing, setSharing] = useState(false);
   /** A shared design link that couldn't be opened, or the one just opened. */
@@ -57,13 +64,34 @@ export default function App() {
   useEffect(() => {
     setStorageOk(writeJson(STORAGE_KEYS.azureImports, azureImports));
   }, [azureImports]);
-  const design = useMemo(() => buildDesign(catalog, input), [input]);
+  // Policies custom assignments brought from the policy index join the catalog.
+  const catalog = useMemo(() => withCustomPolicies(baseCatalog, input.customAssignments), [input.customAssignments]);
+  const design = useMemo(() => buildDesign(catalog, input), [catalog, input]);
   const warnings = design.notes.filter((n) => n.level === 'warning').length;
+  const monthlyCost = useMemo(() => estimateCost(input).monthly, [input]);
 
   // Saved designs, and the one the current decisions belong to (if any).
   const [designs, setDesigns] = useState<SavedDesign[]>(loadDesigns);
   const [activeDesignId, setActiveDesignId] = useState<string | null>(() => readJson<string>(STORAGE_KEYS.activeDesign));
   const activeDesign = designs.find((d) => d.id === activeDesignId);
+  /** A reopened design that deploys differently from when it was saved. */
+  const [openedChanges, setOpenedChanges] = useState<{ id: string; name: string; changes: DesignChanges } | null>(null);
+  /** What each saved design deploys, built from its decisions. */
+  const buildSaved = (d: SavedDesign) => buildDesign(baseCatalog, migrateInput(d.input, d.exportSettings as { excludeManualControls?: boolean }));
+  // Designs saved before baselines existed get one now: changes are tracked from here.
+  useEffect(() => {
+    if (designs.some((d) => !d.baseline)) setDesigns(designs.map((d) => (d.baseline ? d : { ...d, baseline: designBaseline(baseCatalog, buildSaved(d)) })));
+  }, [designs]);
+  /** Saved designs that deploy differently now, for the designs list. */
+  const changedDesigns = useMemo(() => {
+    const out: Record<string, DesignChanges> = {};
+    for (const d of designs) {
+      if (!d.baseline) continue;
+      const c = designChanges(d.baseline, baseCatalog, buildSaved(d));
+      if (c) out[d.id] = c;
+    }
+    return out;
+  }, [designs]);
   const unsaved = hasUnsavedChanges(activeDesign, input, exportSettings);
   // For the design-link handler, which only runs once: whether there's work a link would replace.
   const unsavedRef = useRef(false);
@@ -88,9 +116,11 @@ export default function App() {
   /** Save into the open design, or as a new one if none is open. */
   const saveDesign = (asNew = false) => {
     if (activeDesign && !asNew) {
-      setDesigns(designs.map((d) => (d.id === activeDesign.id ? updateDesign(d, input, exportSettings) : d)));
+      setDesigns(designs.map((d) => (d.id === activeDesign.id ? { ...updateDesign(d, input, exportSettings), baseline: designBaseline(catalog, design) } : d)));
+      setOpenedChanges(null);
     } else {
-      const saved = asNew && activeDesign ? duplicateDesign(createDesign(input, exportSettings), designs) : createDesign(input, exportSettings);
+      const created = asNew && activeDesign ? duplicateDesign(createDesign(input, exportSettings), designs) : createDesign(input, exportSettings);
+      const saved = { ...created, baseline: designBaseline(catalog, design) };
       setDesigns([...designs, saved]);
       setActiveDesignId(saved.id);
       if (saved.name !== input.name) setInput({ ...input, name: saved.name });
@@ -103,6 +133,8 @@ export default function App() {
     setInput(migrateInput(saved.input, saved.exportSettings as { excludeManualControls?: boolean }));
     setExportSettings(migrateExportSettings(saved.exportSettings));
     setActiveDesignId(id);
+    const changes = changedDesigns[id];
+    setOpenedChanges(changes ? { id, name: saved.name, changes } : null);
   };
 
   const newDesign = () => {
@@ -220,6 +252,9 @@ export default function App() {
           <span>
             <strong>{stats.uniquePolicies.toLocaleString()}</strong> distinct policies
           </span>
+          <span title="Rough monthly running cost of the decisions; see the Cost view">
+            ≈ <strong>{formatUsd(monthlyCost)}</strong>/month
+          </span>
           {design.coverage.map((c) => (
             <span key={c.key} title={`${c.short}: controls with at least one enforced policy`}>
               {c.short}: <strong>{c.counts.enforced + c.counts.audited}</strong>/{c.inScope} controls automated,{' '}
@@ -242,12 +277,26 @@ export default function App() {
               </li>
             </ul>
           )}
+          {openedChanges && openedChanges.id === activeDesignId && (
+            <DesignChangesNotice
+              catalog={catalog}
+              name={openedChanges.name}
+              changes={openedChanges.changes}
+              onReviewed={() => {
+                const saved = designs.find((d) => d.id === openedChanges.id);
+                if (saved) setDesigns(designs.map((d) => (d.id === saved.id ? { ...d, baseline: designBaseline(baseCatalog, buildSaved(saved)) } : d)));
+                setOpenedChanges(null);
+              }}
+              onDismiss={() => setOpenedChanges(null)}
+            />
+          )}
           <Notes notes={design.notes} />
           {!storageOk && <p className="muted">Browser storage is unavailable; designs won't be kept after you close the page. Export them from Designs.</p>}
           {view === 'hierarchy' && <Hierarchy catalog={catalog} design={design} input={input} onChange={setInput} />}
           {view === 'coverage' && <Coverage catalog={catalog} design={design} />}
           {view === 'policies' && <Policies catalog={catalog} design={design} />}
           {view === 'pim' && <PrivilegedAccess design={design} input={input} onChange={setInput} />}
+          {view === 'cost' && <CostView input={input} onChange={setInput} />}
           {view === 'compare' && (
             <CompareView
               catalog={catalog}
@@ -256,6 +305,8 @@ export default function App() {
               designs={designs}
               imports={azureImports}
               onImportsChange={setAzureImports}
+              onExportMigration={(d, migration) => setMigrationExport({ design: d, migration })}
+              onUsePrefix={(prefix) => setInput({ ...input, prefix })}
             />
           )}
           <footer className="muted">
@@ -275,6 +326,18 @@ export default function App() {
           onClose={() => setExporting(false)}
         />
       )}
+      {migrationExport && (
+        <ExportDialog
+          catalog={catalog}
+          design={migrationExport.design}
+          settings={exportSettings}
+          onSettingsChange={setExportSettings}
+          excludeManualControls={input.excludeManualControls}
+          onExcludeManualControlsChange={(excludeManualControls) => setInput({ ...input, excludeManualControls })}
+          migration={migrationExport.migration}
+          onClose={() => setMigrationExport(null)}
+        />
+      )}
       {sharing && <ShareDialog input={input} exportSettings={exportSettings} onClose={() => setSharing(false)} />}
       {showDesigns && (
         <DesignsDialog
@@ -282,6 +345,7 @@ export default function App() {
           input={input}
           exportSettings={exportSettings}
           designs={designs}
+          changed={changedDesigns}
           activeId={activeDesign?.id ?? null}
           storageOk={storageOk}
           onSave={() => saveDesign()}

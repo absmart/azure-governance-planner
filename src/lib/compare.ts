@@ -145,11 +145,32 @@ export function compareMgs(a: PolicySnapshot, b: PolicySnapshot): MgComparison[]
 /** How a side covers one control, from policies alone. */
 export type SnapshotControlStatus = 'enforced' | 'audited' | 'manual' | 'missing' | 'none';
 
+/**
+ * A control's compliance in Azure, from the resources its assigned automated
+ * policies evaluated: non-compliant when any is, compliant when some were
+ * evaluated and none is, not evaluated otherwise.
+ */
+export type ControlComplianceState = 'compliant' | 'noncompliant' | 'notEvaluated';
+
+export interface ControlCompliance {
+  state: ControlComplianceState;
+  /** Non-compliant resources, summed over the control's policies (a resource can count once per policy). */
+  nonCompliant: number;
+  compliant: number;
+  /** The control's policies with non-compliant resources, most first. */
+  failing: { p: string; nonCompliant: number }[];
+}
+
 export interface SnapshotCoverage {
   framework: string;
   short: string;
   counts: Record<SnapshotControlStatus, number>;
   controls: Map<string, SnapshotControlStatus>;
+  /** For an Azure import with compliance state. */
+  compliance?: {
+    counts: Record<ControlComplianceState, number>;
+    controls: Map<string, ControlCompliance>;
+  };
 }
 
 /**
@@ -187,6 +208,10 @@ export function snapshotCoverage(
   }
   const counts: Record<SnapshotControlStatus, number> = { enforced: 0, audited: 0, manual: 0, missing: 0, none: 0 };
   const controls = new Map<string, SnapshotControlStatus>();
+  const states = s.compliance;
+  const compliance = states
+    ? { counts: { compliant: 0, noncompliant: 0, notEvaluated: 0 } as Record<ControlComplianceState, number>, controls: new Map<string, ControlCompliance>() }
+    : undefined;
   for (const [id, entry] of byControl) {
     if (f.nist && !inNistBaseline(catalog, id, nist.baseline, nist.privacy)) continue;
     const automated = [...entry.automated];
@@ -201,8 +226,20 @@ export function snapshotCoverage(
             : 'none';
     controls.set(id, status);
     counts[status]++;
+    if (states && compliance && automated.length) {
+      const evaluatedHere = automated.filter((p) => evaluated.has(p) && states[p]);
+      const failing = evaluatedHere
+        .map((p) => ({ p, nonCompliant: states[p].nonCompliant }))
+        .filter((x) => x.nonCompliant > 0)
+        .sort((x, y) => y.nonCompliant - x.nonCompliant);
+      const nonCompliant = failing.reduce((n, x) => n + x.nonCompliant, 0);
+      const compliant = evaluatedHere.reduce((n, p) => n + states[p].compliant, 0);
+      const state: ControlComplianceState = nonCompliant ? 'noncompliant' : compliant ? 'compliant' : 'notEvaluated';
+      compliance.controls.set(id, { state, nonCompliant, compliant, failing });
+      compliance.counts[state]++;
+    }
   }
-  return { framework: f.key, short: f.short, counts, controls };
+  return { framework: f.key, short: f.short, counts, controls, ...(compliance ? { compliance } : {}) };
 }
 
 /** Controls whose status differs between the two sides. */

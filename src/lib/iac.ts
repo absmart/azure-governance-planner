@@ -14,7 +14,8 @@
 
 import type { Catalog } from './catalog';
 import { govZoneName } from './cloud';
-import { PARKING_LOT_ALLOWED_TYPES, PARKING_LOT_POLICY, type Design, type PlannedAssignment, type ScopeRef } from './engine';
+import { PARKING_LOT_ALLOWED_TYPES, PARKING_LOT_POLICY, withCustomPolicies, type Design, type PlannedAssignment, type ScopeRef } from './engine';
+import type { ExistingResources } from './migration';
 import { resourceName } from './naming';
 import { privateDnsZones } from './privateDns';
 
@@ -322,7 +323,9 @@ const lastSegment = (id: string) => id.split('/').pop()!;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 /** Builds the deployment model of a design: everything the templates create, in dependency order. */
-export function buildIacModel(design: Design, catalog: Catalog, library: AlzLibrary): IacModel {
+export function buildIacModel(design: Design, baseCatalog: Catalog, library: AlzLibrary): IacModel {
+  // Custom assignments' policies from the policy index, for their remediation roles.
+  const catalog = withCustomPolicies(baseCatalog, design.input.customAssignments);
   const notes: string[] = [];
   const root = design.mgs[0];
   const mgById = new Map(design.mgs.map((m) => [m.role, m]));
@@ -3112,7 +3115,65 @@ ${notesSection(model)}`;
 // --- Files ---------------------------------------------------------------------
 
 /** Every file of a format, with paths relative to the format's export folder. */
-export function generateIacFiles(format: IacFormat, model: IacModel, options: ExportOptions): IacFile[] {
+/** A migration phase's extras: the plan, and what exists already (for Terraform import blocks). */
+export interface MigrationExport {
+  /** The plan as Markdown (MIGRATION.md). */
+  plan: string;
+  existing: ExistingResources;
+}
+
+const MG_ID = (id: string) => `/providers/Microsoft.Management/managementGroups/${id}`;
+
+/**
+ * Terraform import blocks for the management groups, assignments and custom
+ * definitions in the model that already exist, so Terraform adopts them
+ * instead of failing to create them.
+ */
+export function toTerraformImports(model: IacModel, existing: ExistingResources): string {
+  const blocks: string[] = [];
+  const add = (to: string, id: string) => blocks.push(`import {\n  to = ${to}\n  id = "${id}"\n}`);
+  const depth = (id: string): number => {
+    const m = model.managementGroups.find((x) => x.id === id);
+    return m?.parentId ? depth(m.parentId) + 1 : 1;
+  };
+  const mgs = new Set(existing.managementGroups.map((x) => x.toLowerCase()));
+  for (const m of model.managementGroups)
+    if (mgs.has(m.id.toLowerCase())) add(`azurerm_management_group.level_${depth(m.id)}["${m.id}"]`, MG_ID(m.id));
+  const definitions = new Set(existing.definitions.map((x) => x.toLowerCase()));
+  const root = model.managementGroups[0]?.id ?? '';
+  for (const [list, type, resource] of [
+    [model.policyDefinitions, 'policyDefinitions', 'azurerm_policy_definition'],
+    [model.policySetDefinitions, 'policySetDefinitions', 'azurerm_management_group_policy_set_definition'],
+  ] as const)
+    for (const d of list) {
+      const id = `${MG_ID(root)}/providers/Microsoft.Authorization/${type}/${d.name}`;
+      if (definitions.has(id.toLowerCase())) add(`${resource}.this["${d.name}"]`, id);
+    }
+  const assignments = new Set(existing.assignments.map((x) => x.toLowerCase()));
+  for (const a of model.assignments)
+    if (assignments.has(`${a.managementGroupId}/${a.name}`.toLowerCase()))
+      add(`azurerm_management_group_policy_assignment.this["${a.managementGroupId}/${a.name}"]`, `${MG_ID(a.managementGroupId)}/providers/Microsoft.Authorization/policyAssignments/${a.name}`);
+  return [
+    '# Resources that already exist in Azure, from the import the migration plan was made against.',
+    '# Terraform adopts them on the next apply instead of trying to create them (Terraform 1.5 or later).',
+    '# Role assignments of existing assignments\' identities aren\'t imported: if apply reports',
+    '# "RoleAssignmentExists", import or delete that role assignment.',
+    '',
+    ...blocks.map((b) => `${b}\n`),
+  ].join('\n');
+}
+
+export function generateIacFiles(format: IacFormat, model: IacModel, options: ExportOptions, migration?: MigrationExport): IacFile[] {
+  const files = generateFormatFiles(format, model, options);
+  if (!migration) return files;
+  return [
+    ...files,
+    ...(format === 'terraform' ? [{ name: 'imports.tf', content: toTerraformImports(model, migration.existing), description: 'adopt existing resources' }] : []),
+    { name: 'MIGRATION.md', content: migration.plan, description: 'migration plan' },
+  ];
+}
+
+function generateFormatFiles(format: IacFormat, model: IacModel, options: ExportOptions): IacFile[] {
   const env = environmentOf(options);
   switch (format) {
     case 'bicep':

@@ -47,6 +47,13 @@ export interface SnapshotExemption {
   expiresOn?: string;
 }
 
+/** Resources Azure Policy last evaluated for one policy definition, across every assignment of it. */
+export interface PolicyCompliance {
+  compliant: number;
+  nonCompliant: number;
+  exempt: number;
+}
+
 export interface PolicySnapshot {
   label: string;
   kind: 'design' | 'azure';
@@ -57,6 +64,10 @@ export interface PolicySnapshot {
   exemptions: SnapshotExemption[];
   /** Framework keys whose built-in initiative is assigned. */
   frameworks: string[];
+  /** For an import with compliance state (query 3): by policy key (built-in GUID or custom name, lower case). */
+  compliance?: Record<string, PolicyCompliance>;
+  /** For an import: the custom policy and initiative definition resource IDs (lower case). */
+  definitions?: string[];
   notes: string[];
 }
 
@@ -127,12 +138,16 @@ export function designSnapshot(design: Design, label: string): PolicySnapshot {
 
 // --- From Azure -----------------------------------------------------------------
 
+/** The row type query 3 gives its per-definition compliance summaries. */
+const COMPLIANCE_TYPE = 'microsoft.policyinsights/policystatesummary';
+
 /**
  * The Azure Resource Graph queries the import expects. Resource Graph lets a
- * query use policyresources as a joined table only once, so there are two:
- * management groups, assignments, exemptions and custom definitions; then the
+ * query use policyresources as a joined table only once, so there are three:
+ * management groups, assignments, exemptions and custom definitions; the
  * built-in definitions and initiatives that are assigned (so their member
- * policies can be resolved).
+ * policies can be resolved); and, optionally, the compliance state: distinct
+ * resources per policy definition and state, from the latest evaluations.
  */
 export const AZURE_IMPORT_QUERIES = [
   [
@@ -147,6 +162,13 @@ export const AZURE_IMPORT_QUERIES = [
     "| join kind=inner (policyresources | where type in~ ('microsoft.authorization/policydefinitions', 'microsoft.authorization/policysetdefinitions')",
     "    and tostring(properties.policyType) !~ 'Custom' | extend definitionId = tolower(id)) on definitionId",
     '| project id, name, type, properties',
+  ].join('\n'),
+  [
+    "policyresources | where type =~ 'microsoft.policyinsights/policystates'",
+    '| extend state = tolower(tostring(properties.complianceState)), definitionId = tolower(tostring(properties.policyDefinitionId)), resourceId = tolower(tostring(properties.resourceId))',
+    "| summarize compliant = dcountif(resourceId, state == 'compliant'), nonCompliant = dcountif(resourceId, state == 'noncompliant'), exempt = dcountif(resourceId, state == 'exempt') by definitionId",
+    `| project id = strcat('policystates:', definitionId), name = tostring(split(definitionId, '/')[-1]), type = '${COMPLIANCE_TYPE}',`,
+    "    properties = bag_pack('policyDefinitionId', definitionId, 'compliant', compliant, 'nonCompliant', nonCompliant, 'exempt', exempt)",
   ].join('\n'),
 ];
 
@@ -477,6 +499,26 @@ export function parseAzureImport(text: string | string[], catalog: Catalog, labe
       };
     });
 
+  // Compliance state (query 3), when it was included.
+  const summaries = all.filter((r) => r.type === COMPLIANCE_TYPE);
+  let compliance: Record<string, PolicyCompliance> | undefined;
+  if (summaries.length) {
+    compliance = {};
+    const count = (r: Row, key: string) => Number(get(r.properties, key)) || 0;
+    for (const r of summaries) {
+      const key = policyKey(str(get(r.properties, 'policyDefinitionId')) || r.name);
+      // A built-in and a custom definition can share a last segment only by accident; keep the larger counts.
+      const prev = compliance[key] ?? { compliant: 0, nonCompliant: 0, exempt: 0 };
+      compliance[key] = {
+        compliant: Math.max(prev.compliant, count(r, 'compliant')),
+        nonCompliant: Math.max(prev.nonCompliant, count(r, 'nonCompliant')),
+        exempt: Math.max(prev.exempt, count(r, 'exempt')),
+      };
+    }
+  } else if (assignments.length) {
+    notes.push('No compliance state in the export; include query 3 to see how compliant the tenant is.');
+  }
+
   if (![...mgs.values()].some((m) => !m.id.includes(':')))
     notes.push('No management groups were readable; the hierarchy is built from the assignment scopes.');
   const frameworkIds = new Map(catalog.frameworks.map((f) => [f.id.toLowerCase(), f.key]));
@@ -488,6 +530,8 @@ export function parseAzureImport(text: string | string[], catalog: Catalog, labe
     assignments,
     exemptions,
     frameworks: [...new Set(assignments.map((a) => frameworkIds.get(a.definitionKey)).filter((k): k is string => !!k))],
+    ...(compliance ? { compliance } : {}),
+    definitions: [...definitions.values()].filter((r) => str(r.properties.policyType) === 'Custom').map((r) => r.id.toLowerCase()),
     notes,
   };
 }

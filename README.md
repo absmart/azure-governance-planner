@@ -6,7 +6,12 @@ The design starts from the [Azure Landing Zones library](https://github.com/Azur
 
 - each selected framework's built-in regulatory compliance initiative, in audit mode;
 - a custom enforcement initiative of the framework's Deny-capable policies for landing zones (what-if or enforced, depending on the posture);
-- assignments for decisions such as allowed locations, required tags and confidential landing zones.
+- assignments for decisions such as allowed locations, required tags and confidential landing zones;
+- assignments you add yourself: **+ Add an assignment** on any management group assigns any built-in policy (all of them, searched by name, category or ID, with its effect, enforcement and parameters) or a built-in initiative the catalog knows. They're overridden, exempted, covered and exported like the rest.
+
+## Cost
+
+The **Cost** view estimates what the decisions cost to run each month: each Defender for Cloud plan, Log Analytics ingestion (less Defender for Servers' 500 MB per server a day), Azure Backup and DDoS Network Protection. Enter rough counts of the estate (servers, databases, storage accounts, GB a day); the top bar shows the total. Prices are approximate US pay-as-you-go list prices (in `src/lib/cost.ts`), before discounts and regional differences, so check the Azure pricing calculator before relying on them.
 
 ## Control coverage
 
@@ -37,16 +42,21 @@ The view lists the controls this helps address (NIST 800-53 AC-2(6), AC-2(7), AC
 
 The **Compare** view puts any two of these side by side: the current design, a saved design, or a tenant imported from Azure.
 
-- **Import from Azure** gives a read-only Azure Resource Graph command (bash or PowerShell, through `az rest`, so no CLI extension is needed) that saves the management groups, policy assignments and exemptions you can see, with the custom definitions and the assigned built-in ones, to `azure-policy.json`. Or, without the CLI, run the same two queries in the portal's **Resource Graph Explorer** (with **Format results** off) and choose both **Download as CSV** files. Paste or upload it; each assignment's policies and effects are resolved from its initiative, parameters and overrides.
+- **Import from Azure** gives a read-only Azure Resource Graph command (bash or PowerShell, through `az rest`, so no CLI extension is needed) that saves the management groups, policy assignments and exemptions you can see, with the custom definitions and the assigned built-in ones, to `azure-policy.json`. Or, without the CLI, run the same queries in the portal's **Resource Graph Explorer** (with **Format results** off) and choose the **Download as CSV** files. The third query, which is optional, adds the compliance state: how many resources comply with each policy, per framework control. Paste or upload it; each assignment's policies and effects are resolved from its initiative, parameters and overrides.
 - **Policies in effect** shows a Venn diagram of the policies each side evaluates (or only enforces), and lists those only in A, in both, only in B, or enforced on one side only.
 - **Framework coverage** rates each side by its policies alone against any framework (enforced, audited, manual only, not assigned, no policy) and lists the controls rated differently.
 - **Assignments** are matched by definition (built-in ID, or custom name without an ALZ version suffix) and show where scope or enforcement differs; **management groups** are matched by ID.
+- **Compliance in Azure**: with the compliance state imported, each framework control is rated compliant, non-compliant or not evaluated from the resources its assigned policies last evaluated, with the failing policies and how many resources fail them.
+
+When one side is an Azure import and the other a design, a **migration plan** lists the steps from one to the other, in an order that reports before it blocks: (1) create the missing management groups; (2) add assignments, the ones that would block or remediate in DoNotEnforce first; (3) review compliance and fix or exempt the resources each enforcement would affect; (4) enforce, fewest affected resources first; (5) remove the assignments the design replaces or doesn't have (as `az policy assignment delete` commands, since the export never deletes). It exports phases 1-2 (the design with those assignments in DoNotEnforce) and phase 4 (the full design), each with the plan as `MIGRATION.md`; the Terraform export adds `imports.tf` with import blocks for the management groups, assignments and custom definitions that already exist, so Terraform adopts them. When none of the design's management groups exist but the tenant looks like ALZ, it offers the tenant's prefix.
 
 Microsoft's hidden system assignments (`sys.*`) are left out unless you ask for them.
 
 ## Saved designs
 
 **Designs** keeps named designs in the browser: save (Ctrl+S), save as new, open, duplicate, rename and delete. A design holds every decision, including overrides and exemptions, plus the IaC export settings (format, environment and values). Export one or all of them to a `.json` file to back them up, share them or move them to another machine, and import them again from the same dialog.
+
+Each saved design remembers what it deployed when it was saved. When a catalog update (a new ALZ release, changed built-in initiatives) or an app change makes it deploy something different, the designs list marks it **changed since saved**, and opening it lists the assignments and policies added, removed or changed, until you mark it as reviewed.
 
 ## Export to infrastructure as code
 
@@ -92,7 +102,7 @@ npx --yes @azure/static-web-apps-cli@2.0.2 deploy ./dist --env production
 
 ## Policy data
 
-`src/data/catalog.json` and `public/alz-library.json` (the ALZ definitions and assignment parameters, loaded only when exporting) are committed snapshots built by `npm run update-catalog` from:
+`src/data/catalog.json`, `public/alz-library.json` (the ALZ definitions and assignment parameters, loaded only when exporting) and `public/policy-index.json` (every built-in policy, loaded when adding an assignment) are committed snapshots built by `npm run update-catalog` from:
 
 - [Azure/azure-policy](https://github.com/Azure/azure-policy) built-in initiatives
 - the [Azure Landing Zones library](https://github.com/Azure/Azure-Landing-Zones-Library) archetypes, assignments and custom definitions, pinned to a release (`ALZ_REF` in the script)

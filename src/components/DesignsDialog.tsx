@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { changesSummary, type DesignChanges } from '../lib/baseline';
 import type { Catalog } from '../lib/catalog';
 import { type SavedDesign, backupFileName, createDesign, hasUnsavedChanges, parseBackup, toBackup } from '../lib/designs';
 import { downloadFile } from '../lib/download';
@@ -16,6 +17,8 @@ export function DesignsDialog(props: {
   input: DesignInput;
   exportSettings: ExportSettings;
   designs: SavedDesign[];
+  /** Saved designs that deploy differently from when they were saved. */
+  changed: Record<string, DesignChanges>;
   activeId: string | null;
   storageOk: boolean;
   onSave: () => void;
@@ -130,6 +133,11 @@ export function DesignsDialog(props: {
                     <td>
                       <input className="design-name" value={d.name} aria-label="Design name" onChange={(e) => props.onRename(d.id, e.target.value)} />
                       {d.id === props.activeId && <span className="chip">open</span>}
+                      {props.changed[d.id] && (
+                        <span className="badge warn" title={`Since it was saved: ${changesSummary(props.changed[d.id])}. Open it to see what changed.`}>
+                          changed since saved
+                        </span>
+                      )}
                     </td>
                     <td className="muted">{frameworks(d.input)}</td>
                     <td className="muted">{d.input.cloud === 'AzureUSGovernment' ? 'Government' : 'Commercial'}</td>

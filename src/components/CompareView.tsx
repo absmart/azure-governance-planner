@@ -7,13 +7,18 @@ import {
   coverageDifferences,
   overlap,
   snapshotCoverage,
+  type ControlComplianceState,
   type PolicyComparison,
   type SnapshotControlStatus,
+  type SnapshotCoverage,
 } from '../lib/compare';
 import { migrateInput, type SavedDesign } from '../lib/designs';
 import { buildDesign, type Design, type DesignInput } from '../lib/engine';
 import { catalogPolicy, designSnapshot, policyLabel, type PolicySnapshot } from '../lib/snapshot';
+import type { MigrationExport } from '../lib/iac';
+import { buildMigrationPlan } from '../lib/migration';
 import { ImportAzureDialog } from './ImportAzureDialog';
+import { MigrationPlan } from './MigrationPlan';
 import { PolicyLink } from './common';
 
 type Side = 'a' | 'b' | 'both';
@@ -26,6 +31,77 @@ const STATUS_LABEL: Record<SnapshotControlStatus, string> = {
   missing: 'Not assigned',
   none: 'No policy',
 };
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const COMPLIANCE_LABEL: Record<ControlComplianceState, string> = {
+  noncompliant: 'Non-compliant',
+  compliant: 'Compliant',
+  notEvaluated: 'Not evaluated',
+};
+
+/** How compliant an imported tenant is, per control of the framework. */
+function ComplianceSummary(props: { catalog: Catalog; label: string; coverage: SnapshotCoverage }) {
+  const { catalog, label, coverage } = props;
+  const [all, setAll] = useState(false);
+  const c = coverage.compliance!;
+  const failing = [...c.controls].filter(([, x]) => x.state === 'noncompliant').sort((x, y) => y[1].nonCompliant - x[1].nonCompliant);
+  const shown = all ? failing : failing.slice(0, 25);
+  return (
+    <>
+      <h3 className="section-label">Compliance in Azure: {label}</h3>
+      <p className="muted">
+        From the last policy evaluation, for the {coverage.short} controls with automated policies. A control is non-compliant when any
+        resource fails one of its assigned policies.
+      </p>
+      <p className="compliance-counts">
+        {(Object.keys(COMPLIANCE_LABEL) as ControlComplianceState[]).map((s) => (
+          <span key={s} className={`chip compliance-${s}`}>
+            {COMPLIANCE_LABEL[s]}: <strong>{c.counts[s]}</strong>
+          </span>
+        ))}
+      </p>
+      {failing.length > 0 && (
+        <div className="table-scroll diff-list">
+          <table>
+            <thead>
+              <tr>
+                <th>Control</th>
+                <th className="num">Non-compliant resources</th>
+                <th>Failing policies</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map(([id, x]) => (
+                <tr key={id}>
+                  <td>
+                    <code>{id}</code> <span className="muted">{catalog.nist.controls[id]?.t}</span>
+                  </td>
+                  <td className="num compliance-noncompliant">{x.nonCompliant.toLocaleString()}</td>
+                  <td>
+                    {x.failing.slice(0, 3).map((f, i) => (
+                      <span key={f.p}>
+                        {i > 0 && '; '}
+                        {GUID.test(f.p) ? <PolicyLink catalog={catalog} id={f.p} /> : policyLabel(catalog, f.p)}{' '}
+                        <span className="muted">({f.nonCompliant})</span>
+                      </span>
+                    ))}
+                    {x.failing.length > 3 && <span className="muted"> and {x.failing.length - 3} more</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {failing.length > shown.length && (
+        <button className="link" onClick={() => setAll(true)}>
+          Show all {failing.length}
+        </button>
+      )}
+    </>
+  );
+}
 
 /** Two overlapping circles with the policy counts; click a region to list it. */
 function Venn(props: { a: string; b: string; counts: { onlyA: number; both: number; onlyB: number }; selected: Side; onSelect: (side: Side) => void }) {
@@ -80,6 +156,10 @@ export function CompareView(props: {
   designs: SavedDesign[];
   imports: PolicySnapshot[];
   onImportsChange: (imports: PolicySnapshot[]) => void;
+  /** Opens the export for a migration phase. */
+  onExportMigration: (design: Design, migration: MigrationExport & { title: string }) => void;
+  /** Sets the current design's prefix. */
+  onUsePrefix: (prefix: string) => void;
 }) {
   const { catalog, design, input, designs, imports } = props;
   const options = [
@@ -106,6 +186,12 @@ export function CompareView(props: {
     if (key.startsWith('azure:')) return imports[Number(key.slice(6))] ?? null;
     return null;
   };
+  /** The design behind a side, when it is one. */
+  const designOf = (key: string): { design: Design; label: string; current: boolean } | null => {
+    if (key === 'current') return { design, label: input.name || 'Current design', current: true };
+    const d = key.startsWith('design:') ? designs.find((x) => `design:${x.id}` === key) : undefined;
+    return d ? { design: buildDesign(catalog, migrateInput(d.input)), label: d.name, current: false } : null;
+  };
   const a = useMemo(() => snapshotOf(aKey), [aKey, design, designs, imports]);
   const b = useMemo(() => snapshotOf(bKey), [bKey, design, designs, imports]);
 
@@ -120,6 +206,13 @@ export function CompareView(props: {
   const diffs = covA && covB ? coverageDifferences(covA, covB) : [];
   const assignments = useMemo(() => (a && b ? compareAssignments(a, b, { includeSystem }) : []), [a, b, includeSystem]);
   const mgs = a && b ? compareMgs(a, b) : [];
+  // A migration plan when one side is an Azure import and the other a design.
+  const migration = useMemo(() => {
+    const [azureKey, designKey] = aKey.startsWith('azure:') ? [aKey, bKey] : bKey.startsWith('azure:') ? [bKey, aKey] : [null, null];
+    const current = azureKey ? imports[Number(azureKey.slice(6))] : undefined;
+    const target = designKey ? designOf(designKey) : null;
+    return current && target ? { target, plan: buildMigrationPlan(target.design, target.label, current) } : null;
+  }, [aKey, bKey, design, designs, imports]);
 
   const inA = (r: PolicyComparison) => (enforcedOnly ? r.a.some((x) => x.enforced) : r.a.length > 0);
   const inB = (r: PolicyComparison) => (enforcedOnly ? r.b.some((x) => x.enforced) : r.b.length > 0);
@@ -309,6 +402,12 @@ export function CompareView(props: {
                   </tbody>
                 </table>
               </div>
+              {[
+                [a.label, covA],
+                [b.label, covB],
+              ].map(([label, c]) =>
+                (c as SnapshotCoverage).compliance ? <ComplianceSummary key={label as string} catalog={catalog} label={label as string} coverage={c as SnapshotCoverage} /> : null,
+              )}
               <h3 className="section-label">{diffs.length} controls rated differently</h3>
               {diffs.length > 0 && (
                 <div className="table-scroll diff-list">
@@ -405,6 +504,15 @@ export function CompareView(props: {
             </div>
           </section>
         </>
+      )}
+
+      {migration && (
+        <MigrationPlan
+          plan={migration.plan}
+          design={migration.target.design}
+          onExport={props.onExportMigration}
+          onUsePrefix={migration.target.current ? props.onUsePrefix : undefined}
+        />
       )}
 
       {importing && (

@@ -8,6 +8,7 @@ import {
   type AlzLibrary,
   type ExportSettings,
   type IacFormat,
+  type MigrationExport,
   buildIacModel,
   generateIacFiles,
   manualPolicyCount,
@@ -44,6 +45,8 @@ export function ExportDialog(props: {
   /** The design's "Exclude manual-only controls", shown here too because it shapes the export. */
   excludeManualControls: boolean;
   onExcludeManualControlsChange: (exclude: boolean) => void;
+  /** Exporting a migration phase: the plan, what exists in Azure, and a heading. */
+  migration?: MigrationExport & { title: string };
   onClose: () => void;
 }) {
   const { catalog, design, settings, onSettingsChange: setSettings, onClose } = props;
@@ -62,7 +65,7 @@ export function ExportDialog(props: {
   }, [onClose]);
 
   const model = useMemo(() => (library ? buildIacModel(design, catalog, library) : null), [design, catalog, library]);
-  const files = useMemo(() => (model ? generateIacFiles(settings.format, model, settings) : []), [model, settings]);
+  const files = useMemo(() => (model ? generateIacFiles(settings.format, model, settings, props.migration) : []), [model, settings, props.migration]);
   const file = files[fileIndex] ?? files[0];
   const unset = model ? new Set(unsetInputs(model, settings).map((i) => i.name)) : new Set<string>();
   const root = EXPORT_ROOT[settings.format];
@@ -86,7 +89,7 @@ export function ExportDialog(props: {
     <div className="overlay" onClick={onClose}>
       <div className="dialog" role="dialog" aria-modal="true" aria-label="Export IaC" onClick={(e) => e.stopPropagation()}>
         <header className="row">
-          <h2>Export infrastructure as code</h2>
+          <h2>{props.migration ? props.migration.title : 'Export infrastructure as code'}</h2>
           <div className="tabs">
             {(Object.keys(FORMAT_LABEL) as IacFormat[]).map((f) => (
               <button
@@ -115,6 +118,18 @@ export function ExportDialog(props: {
 
         {model && (
           <div className="export-body">
+            {props.migration && (
+              <ul className="issues">
+                <li className="info">
+                  A migration phase: MIGRATION.md has the whole plan.{' '}
+                  {settings.format === 'terraform'
+                    ? `imports.tf adopts the ${props.migration.existing.managementGroups.length} management groups and ${props.migration.existing.assignments.length} assignments that already exist.`
+                    : settings.format === 'terragrunt'
+                      ? 'Terragrunt: the Terraform export has imports.tf to adopt what already exists; add its blocks to the module before the first apply.'
+                      : 'Bicep updates what already exists in place.'}
+                </li>
+              </ul>
+            )}
             <p className="muted">
               Creates the {model.managementGroups.length} management groups, {model.policyDefinitions.length} custom policy definitions
               and {model.policySetDefinitions.length} custom initiatives (ALZ library {model.alzRef}), all {model.assignments.length}{' '}
@@ -161,7 +176,7 @@ export function ExportDialog(props: {
               </div>
             </details>
 
-            {manualPolicyCount(model).policies > 0 && (
+            {manualPolicyCount(model).policies > 0 && !props.migration && (
               <label className="check placement" title="Assignment overrides set the manual-attestation policies to Disabled; up to 500 per assignment.">
                 <input
                   type="checkbox"

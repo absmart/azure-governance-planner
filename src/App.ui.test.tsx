@@ -4,11 +4,23 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import catalogJson from './data/catalog.json';
+import { designBaseline } from './lib/baseline';
+import type { Catalog } from './lib/catalog';
+import { DEFAULT_EXPORT_SETTINGS, createDesign } from './lib/designs';
+import { DEFAULT_INPUT, buildDesign } from './lib/engine';
 import { STORAGE_KEYS, loadInput } from './lib/storage';
-import { fixture } from './test/azureFixture';
+import { complianceFixture, fixture } from './test/azureFixture';
 import { allByText, blur, byText, click, field, mount, setValue, unmountAll, until } from './test/dom';
 
+const catalog = catalogJson as unknown as Catalog;
 const app = () => mount(<App />);
+/** Serves the app's lazily fetched files from public/. */
+const stubFetch = () =>
+  vi.stubGlobal('fetch', async (url: string) => {
+    const name = String(url).split('/').pop()!;
+    return new Response(readFileSync(`public/${name}`, 'utf8'), { headers: { 'content-type': 'application/json' } });
+  });
 /** The decisions panel's section with this heading. */
 const section = (root: ParentNode, title: string) => byText(root, 'section.decision', title).closest('section')!;
 const tab = (root: ParentNode, label: string | RegExp) => byText<HTMLButtonElement>(root, '.tabs button', label);
@@ -207,5 +219,110 @@ describe('compare', () => {
     click(c.querySelector('.venn [aria-label^="both:"]')!);
     expect(tab(c, /^In both/).className).toContain('active');
     expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.azureImports)!)).toHaveLength(1);
+  });
+});
+
+describe('custom assignments', () => {
+  it('adds any built-in policy to a management group, and deletes it again', async () => {
+    stubFetch();
+    const c = app();
+    click(byText(c, 'button.mg-node', 'Corp'));
+    click(byText(c, 'button', '+ Add an assignment'));
+    // Only the full policy index has this one, so it shows once the index loads.
+    setValue(c.querySelector('input[aria-label="Search definitions"]')!, 'Arc enabled Kubernetes clusters to install the Azure Policy extension');
+    const result = await until(() => allByText<HTMLButtonElement>(c, '.definition-results button', 'Configure Azure Arc enabled Kubernetes clusters to install the Azure Policy extension')[0]);
+    click(result);
+    setValue(c.querySelector('input[aria-label="Assignment name"]')!, 'Deploy-Arc-Policy');
+    click(byText(c, 'button', /^Add assignment$/));
+
+    expect(loadInput().customAssignments).toMatchObject([{ mg: 'corp', name: 'Deploy-Arc-Policy', kind: 'policy', definition: '0adc5395-9169-4b9b-8687-af838d69410a' }]);
+    const row = byText(c, 'tr.assignment', 'Deploy-Arc-Policy');
+    expect(row.textContent).toContain('Custom');
+    click(row);
+    click(byText(c, 'button', 'Delete custom assignment'));
+    expect(loadInput().customAssignments).toEqual([]);
+    expect(allByText(c, 'tr.assignment', 'Deploy-Arc-Policy')).toHaveLength(0);
+  });
+
+  it('checks the name', async () => {
+    stubFetch();
+    const c = app();
+    click(byText(c, 'button.mg-node', 'Landing zones'));
+    click(byText(c, 'button', '+ Add an assignment'));
+    await until(() => !c.textContent!.includes('Loading every built-in policy'));
+    setValue(c.querySelector('input[aria-label="Search definitions"]')!, 'allowed virtual machine size SKUs');
+    click(byText(c, '.definition-results button', 'Allowed virtual machine size SKUs'));
+    setValue(c.querySelector('input[aria-label="Assignment name"]')!, 'Deny-IP-forwarding');
+    click(byText(c, 'button', /^Add assignment$/));
+    expect(c.textContent).toContain('Landing zones already has an assignment named Deny-IP-forwarding.');
+    expect(loadInput().customAssignments).toEqual([]);
+  });
+});
+
+describe('cost', () => {
+  it('estimates the running cost from the counts entered', () => {
+    const c = app();
+    click(tab(c, 'Cost'));
+    const total = () => c.querySelector('.cost-total strong')!.textContent;
+    const before = total();
+    setValue(field(c, 'Servers (VMs and Arc machines)'), '100');
+    expect(loadInput().costQuantities.servers).toBe(100);
+    expect(total()).not.toBe(before);
+    const servers = [...c.querySelectorAll('.cost-table tr')].find((tr) => tr.querySelector('td')?.textContent === 'Servers')!;
+    expect(servers.textContent).toContain('100 servers');
+    expect(servers.textContent).toContain('$1,500');
+    expect(c.querySelector('.cost-table')!.textContent).not.toMatch(/RU\/ss|GBs/);
+    expect(c.querySelector('.stats')!.textContent).toContain(total()!);
+  });
+});
+
+describe('migration plan', () => {
+  it('plans from an Azure import with compliance state, and exports the audit-first phase', async () => {
+    stubFetch();
+    const c = app();
+    click(tab(c, 'Compare'));
+    click(byText(c, 'button', 'Import from Azure…'));
+    const dialog = c.querySelector('[role="dialog"][aria-label="Import from Azure"]')!;
+    setValue(dialog.querySelector('textarea')!, fixture() + complianceFixture());
+    click(byText(dialog, 'button', 'Import and compare'));
+
+    expect(byText(c, 'h3', 'Compliance in Azure: Azure')).toBeTruthy();
+    const plan = byText(c, 'section.migration', 'Migration plan');
+    expect(plan.textContent).toContain('5. Clean up');
+    expect(byText(plan, '.migration-steps li', 'Remove').textContent).toContain('az policy assignment delete');
+
+    click(byText(plan, 'button', 'Export phases 1–2 (audit first)'));
+    const exp = c.querySelector('[role="dialog"][aria-label="Export IaC"]')!;
+    expect(exp.querySelector('h2')!.textContent).toBe('Export migration phases 1–2: audit first');
+    await until(() => exp.querySelector('.file-tabs'));
+    expect(byText(exp, '.file-tabs button', 'MIGRATION.md')).toBeTruthy();
+    click(byText(exp, '.tabs button', 'Terraform'));
+    click(byText(exp, '.file-tabs button', 'imports.tf'));
+    expect(exp.querySelector('pre, code, textarea')!.textContent).toContain('azurerm_management_group.level_1["contoso"]');
+  });
+});
+
+describe('saved designs after a catalog update', () => {
+  it('shows what a saved design now deploys differently, until reviewed', () => {
+    const saved = createDesign({ ...DEFAULT_INPUT, name: 'Older design' }, DEFAULT_EXPORT_SETTINGS);
+    const baseline = designBaseline(catalog, buildDesign(catalog, saved.input));
+    // As if saved before a catalog update that added an assignment.
+    const [first] = Object.keys(baseline.assignments);
+    delete baseline.assignments[first];
+    localStorage.setItem(STORAGE_KEYS.designs, JSON.stringify([{ ...saved, baseline: { ...baseline, catalog: '2026-01-01' } }]));
+
+    const c = app();
+    click(byText(c, '.topbar button', /^Designs/));
+    const dialog = c.querySelector('[role="dialog"][aria-label="Designs"]')!;
+    const row = [...dialog.querySelectorAll('tbody tr')].find((tr) => tr.querySelector('input')?.value === 'Older design')!;
+    expect(row.textContent).toContain('changed since saved');
+    click(byText(row, 'button', 'Open'));
+
+    const notice = byText(c, '.design-changes', 'deploys differently');
+    expect(notice.textContent).toContain('1 assignment added');
+    click(byText(notice, 'button', 'Mark as reviewed'));
+    expect(c.querySelector('.design-changes')).toBeNull();
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.designs)!)[0];
+    expect(Object.keys(stored.baseline.assignments)).toContain(first);
   });
 });

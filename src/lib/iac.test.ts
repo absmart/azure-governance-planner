@@ -2,14 +2,21 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import catalogJson from '../data/catalog.json';
-import type { Catalog } from './catalog';
+import type { Catalog, PolicyInfo } from './catalog';
 import { DEFAULT_INPUT, buildDesign, type DesignInput } from './engine';
-import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, manualPolicyCount, unsetInputs } from './iac';
+import { type AlzLibrary, type IacFormat, buildIacModel, generateIacFiles, inputValue, manualPolicyCount, toTerraformImports, unsetInputs } from './iac';
+import { buildMigrationPlan, migrationMarkdown } from './migration';
+import { complianceFixture, fixture } from '../test/azureFixture';
+import { parseAzureImport } from './snapshot';
 import { DEFAULT_PIM } from './pim';
 import { crc32, createZip } from './zip';
 
 const catalog = catalogJson as unknown as Catalog;
 const library = JSON.parse(readFileSync(new URL('../../public/alz-library.json', import.meta.url), 'utf8')) as AlzLibrary;
+const policyIndex = JSON.parse(readFileSync(new URL('../../public/policy-index.json', import.meta.url), 'utf8')) as { policies: Record<string, PolicyInfo> };
+/** A DeployIfNotExists built-in only the policy index has (role 85cb6faf, Arc Kubernetes extension contributor). */
+const ARC_POLICY = '0adc5395-9169-4b9b-8687-af838d69410a';
+const ISO = catalog.frameworks.find((f) => f.key === 'iso-27001-2022')!;
 
 /** Inputs the templates fill from the platform resources they create. */
 const CREATED = new Set([
@@ -41,6 +48,20 @@ const everything: Partial<DesignInput> = {
     'landingzones/Deny-MgmtPorts-Internet': { notScopes: [{ kind: 'managementGroup', role: 'online' }] },
     'landingzones/Deny-IP-forwarding': { enforcementMode: 'DoNotEnforce' },
   },
+  customAssignments: [
+    {
+      id: 'arc',
+      mg: 'corp',
+      name: 'Deploy-Arc-Policy',
+      displayName: 'Arc Kubernetes policy extension',
+      kind: 'policy',
+      definition: ARC_POLICY,
+      info: policyIndex.policies[ARC_POLICY],
+      enforcementMode: 'Default',
+      parameters: {},
+    },
+    { id: 'iso', mg: 'online', name: 'Audit-ISO-Online', displayName: '', kind: 'initiative', definition: ISO.id, enforcementMode: 'Default', parameters: {} },
+  ],
   exemptions: [
     {
       id: 'a',
@@ -535,6 +556,47 @@ describe('excluding manual-only controls', () => {
   });
 });
 
+describe('custom assignments in the export', () => {
+  it('assigns them with the remediation roles their policies need, from the policy index', () => {
+    const m = model(everything);
+    const arc = m.assignments.find((a) => a.name === 'Deploy-Arc-Policy')!;
+    expect(arc).toMatchObject({ managementGroupId: 'contoso-corp', policyDefinitionId: `/providers/Microsoft.Authorization/policyDefinitions/${ARC_POLICY}`, identity: true });
+    expect(arc.roleDefinitionIds.map((r) => r.split('/').pop())).toEqual(policyIndex.policies[ARC_POLICY].r);
+    const iso = m.assignments.find((a) => a.name === 'Audit-ISO-Online')!;
+    expect(iso.policyDefinitionId).toBe(`/providers/Microsoft.Authorization/policySetDefinitions/${ISO.id}`);
+  });
+});
+
+describe('migration exports', () => {
+  const m = model();
+  const tenant = parseAzureImport([fixture(), complianceFixture()], catalog);
+  const plan = buildMigrationPlan(buildDesign(catalog, DEFAULT_INPUT), 'Default', tenant);
+
+  it('imports what exists into Terraform at the right addresses', () => {
+    const definition = m.policyDefinitions[0].name;
+    const imports = toTerraformImports(m, {
+      managementGroups: ['contoso', 'contoso-landingzones', 'contoso-corp'],
+      assignments: ['contoso-landingzones/deny-ip-forwarding'],
+      definitions: [`/providers/Microsoft.Management/managementGroups/contoso/providers/Microsoft.Authorization/policyDefinitions/${definition}`.toLowerCase()],
+    });
+    expect(imports).toContain('import {\n  to = azurerm_management_group.level_1["contoso"]\n  id = "/providers/Microsoft.Management/managementGroups/contoso"\n}');
+    expect(imports).toContain('to = azurerm_management_group.level_2["contoso-landingzones"]');
+    expect(imports).toContain('to = azurerm_management_group.level_3["contoso-corp"]');
+    expect(imports).toContain('to = azurerm_management_group_policy_assignment.this["contoso-landingzones/Deny-IP-forwarding"]');
+    expect(imports).toContain(`to = azurerm_policy_definition.this["${definition}"]`);
+    expect(imports.match(/^import \{/gm)).toHaveLength(5);
+  });
+
+  it('adds imports.tf (Terraform) and MIGRATION.md to a migration phase export', () => {
+    const migration = { plan: migrationMarkdown(plan), existing: plan.existing };
+    const names = (f: IacFormat) => generateIacFiles(f, m, { environment: 'prd', values: {} }, migration).map((x) => x.name);
+    expect(names('terraform')).toEqual(expect.arrayContaining(['imports.tf', 'MIGRATION.md']));
+    expect(names('bicep')).toContain('MIGRATION.md');
+    expect(names('bicep')).not.toContain('imports.tf');
+    expect(generateIacFiles('terraform', m, { environment: 'prd', values: {} }).map((x) => x.name)).not.toContain('imports.tf');
+  });
+});
+
 describe('generateIacFiles', () => {
   const m = model(everything);
   const options = { environment: 'prod', values: {} };
@@ -562,6 +624,13 @@ describe('generateIacFiles', () => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, f.content);
       }
+    // A Terraform migration phase against the synthetic tenant, with import blocks.
+    const plan = buildMigrationPlan(buildDesign(catalog, { ...DEFAULT_INPUT, ...everything }), 'Everything', parseAzureImport([fixture(), complianceFixture()], catalog));
+    for (const f of generateIacFiles('terraform', m, options, { plan: migrationMarkdown(plan), existing: { ...plan.existing, assignments: ['contoso-landingzones/deny-ip-forwarding'] } })) {
+      const path = join(out!, 'terraform-migration', f.name);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, f.content);
+    }
   });
 });
 

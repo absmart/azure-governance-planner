@@ -7,11 +7,15 @@
 // framework's Deny-capable policies are gathered into a custom enforcement
 // initiative for the landing zones.
 
-import { BUILTIN_POLICY, canDeny, isAutomated, type Catalog, type Framework, type Member } from './catalog';
+import { BUILTIN_POLICY, canDeny, isAutomated, type Catalog, type Framework, type Member, type PolicyInfo } from './catalog';
 import { familyOf } from './families';
 import { DEFAULT_PIM, PIM_CONTROLS, buildPim, type PimDesign, type PimInput } from './pim';
 import { uuidv5 } from './uuid';
 import { DEFAULT_PRIVATE_DNS_CATEGORIES } from './privateDns';
+import { DEFAULT_COST_QUANTITIES, type CostQuantities } from './cost';
+import { DEFAULT_DEFENDER_PLANS, DEFENDER_PLANS } from './defender';
+
+export { DEFAULT_DEFENDER_PLANS, DEFENDER_PLANS };
 
 export type MgRole =
   | 'root'
@@ -151,29 +155,12 @@ export interface DesignInput {
    * overrides in the export), so controls only they cover drop out of evaluation.
    */
   excludeManualControls: boolean;
+  /** Assignments the user adds to management groups. */
+  customAssignments: CustomAssignment[];
+  /** Rough counts of the estate, for the cost estimate (cost.ts). */
+  costQuantities: CostQuantities;
 }
 
-/**
- * Defender for Cloud plans, by the Deploy-MDFC-Config initiative parameter
- * that turns each on (enableAscFor<key>). ALZ's own assignment switches most
- * of them to Disabled; the design sets every one explicitly.
- */
-export const DEFENDER_PLANS: { key: string; label: string; help: string; default: boolean }[] = [
-  { key: 'Servers', label: 'Servers', help: 'Defender for Servers on VMs and Arc machines.', default: true },
-  { key: 'ServersVulnerabilityAssessments', label: 'Servers vulnerability assessment', help: 'Built-in vulnerability scanning on servers.', default: true },
-  { key: 'Sql', label: 'Azure SQL', help: 'Azure SQL Database and Managed Instance.', default: true },
-  { key: 'SqlOnVm', label: 'SQL servers on machines', help: 'SQL Server on VMs and Arc.', default: true },
-  { key: 'OssDb', label: 'Open-source databases', help: 'PostgreSQL, MySQL and MariaDB.', default: true },
-  { key: 'CosmosDbs', label: 'Cosmos DB', help: 'Azure Cosmos DB accounts.', default: true },
-  { key: 'AppServices', label: 'App Service', help: 'Web apps and functions on App Service.', default: true },
-  { key: 'Storage', label: 'Storage', help: 'Storage accounts (Defender for Storage).', default: true },
-  { key: 'Containers', label: 'Containers', help: 'AKS, container registries and the Azure Policy add-on for Kubernetes.', default: true },
-  { key: 'KeyVault', label: 'Key Vault', help: 'Key vaults.', default: true },
-  { key: 'Arm', label: 'Resource Manager', help: 'Control-plane operations on subscriptions.', default: true },
-  { key: 'Cspm', label: 'Defender CSPM', help: 'Premium posture management (attack paths, agentless scanning). Billed per resource, so off by default.', default: false },
-  { key: 'AI', label: 'AI services', help: 'Threat protection for Azure OpenAI and AI services. Off by default; turn on where AI workloads run.', default: false },
-];
-export const DEFAULT_DEFENDER_PLANS = DEFENDER_PLANS.filter((p) => p.default).map((p) => p.key);
 
 export const DEFAULT_INPUT: DesignInput = {
   name: 'Contoso governance',
@@ -211,6 +198,8 @@ export const DEFAULT_INPUT: DesignInput = {
   pim: DEFAULT_PIM,
   alzCustomRoles: true,
   excludeManualControls: false,
+  customAssignments: [],
+  costQuantities: DEFAULT_COST_QUANTITIES,
 };
 
 /** An ALZ custom role as the design defines it. */
@@ -241,7 +230,60 @@ export const PARKING_LOT_ALLOWED_TYPES = [
 
 export const GOV_LOCATIONS = ['usgovvirginia', 'usgovtexas', 'usgovarizona', 'usdodeast', 'usdodcentral'];
 
-export type AssignmentOrigin = 'framework' | 'alz' | 'decision' | 'enforcement';
+export type AssignmentOrigin = 'framework' | 'alz' | 'decision' | 'enforcement' | 'custom';
+
+/** An assignment the user adds: any built-in policy, or a built-in initiative the catalog knows. */
+export interface CustomAssignment {
+  id: string;
+  mg: MgRole;
+  /** Assignment name, up to 24 characters. */
+  name: string;
+  displayName: string;
+  kind: 'policy' | 'initiative';
+  /** Built-in policy or initiative GUID. */
+  definition: string;
+  /** A built-in policy the catalog doesn't carry: its details, from the policy index. */
+  info?: PolicyInfo;
+  enforcementMode: 'Default' | 'DoNotEnforce';
+  /** Parameter values by name; a string "effect" sets the policy's effect. */
+  parameters: Record<string, unknown>;
+}
+
+/** A built-in initiative the catalog knows the members of. */
+export interface KnownInitiative {
+  id: string;
+  name: string;
+  description: string;
+  policies: Member[];
+}
+
+/** Built-in initiatives a custom assignment can use: the frameworks, the extra initiatives and ALZ's built-in ones. */
+export function knownInitiatives(catalog: Catalog): KnownInitiative[] {
+  const out = new Map<string, KnownInitiative>();
+  for (const f of catalog.frameworks)
+    out.set(f.id.toLowerCase(), { id: f.id, name: f.name, description: f.description, policies: f.refs.map((r) => ({ p: r.p, e: r.e, ...(r.r ? { r: [r.r] } : {}) })) });
+  for (const i of Object.values(catalog.initiatives)) out.set(i.id.toLowerCase(), { id: i.id, name: i.name, description: i.description, policies: i.policies });
+  for (const a of Object.values(catalog.alz.assignments)) {
+    if (a.kind !== 'initiative' || a.source !== 'BuiltIn') continue;
+    const id = a.definitionId.split('/').pop()!;
+    if (!out.has(id.toLowerCase())) out.set(id.toLowerCase(), { id, name: a.definitionName ?? a.displayName, description: a.description, policies: a.policies });
+  }
+  return [...out.values()].sort((x, y) => x.name.localeCompare(y.name));
+}
+
+/** The catalog plus the policies custom assignments brought from the policy index. */
+export function withCustomPolicies(catalog: Catalog, custom: CustomAssignment[] | undefined): Catalog {
+  const extra = (custom ?? []).filter((c) => c.info && !catalog.policies[c.definition]);
+  if (!extra.length) return catalog;
+  return { ...catalog, policies: { ...catalog.policies, ...Object.fromEntries(extra.map((c) => [c.definition, c.info!])) } };
+}
+
+/** The value of a parameter named "effect" (any case), when it's a string. */
+export function effectParameter(parameters: Record<string, unknown> | undefined): string | undefined {
+  const key = Object.keys(parameters ?? {}).find((k) => k.toLowerCase() === 'effect');
+  const value = key ? parameters![key] : undefined;
+  return typeof value === 'string' && value ? value[0].toUpperCase() + value.slice(1) : undefined;
+}
 
 export interface PlannedAssignment {
   /** Assignment name (max 24 characters at management group scope). */
@@ -469,7 +511,8 @@ function mgId(prefix: string, role: MgRole): string {
   return role === 'root' ? p : `${p}-${role}`;
 }
 
-export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date()): Design {
+export function buildDesign(baseCatalog: Catalog, input: DesignInput, now = new Date()): Design {
+  const catalog = withCustomPolicies(baseCatalog, input.customAssignments);
   const notes: Note[] = [];
   const frameworks = input.frameworks
     .map((k) => catalog.frameworks.find((f) => f.key === k))
@@ -767,6 +810,64 @@ export function buildDesign(catalog: Catalog, input: DesignInput, now = new Date
           ? `${f.short} compliance dashboard across every subscription (audit-only).`
           : `${f.short} compliance dashboard for the ${mgByRole.get(scope)!.displayName} scope (audit-only).`,
       exemptions: [],
+    });
+  }
+
+  // --- Custom assignments ----------------------------------------------------
+
+  const initiatives = new Map(knownInitiatives(catalog).map((i) => [i.id.toLowerCase(), i]));
+  for (const c of input.customAssignments ?? []) {
+    const mg = mgByRole.get(c.mg);
+    const label = c.displayName || c.name;
+    if (!mg) {
+      notes.push({ level: 'warning', text: `Custom assignment "${label}" is for the ${c.mg} management group, which isn't in the design.` });
+      continue;
+    }
+    if (mg.assignments.some((a) => a.name === c.name)) {
+      notes.push({ level: 'warning', text: `Custom assignment "${label}" has the same name as another assignment at ${mg.displayName} (${c.name}), so it's left out.` });
+      continue;
+    }
+    let policies: Member[];
+    let definitionName: string;
+    let description: string;
+    if (c.kind === 'initiative') {
+      const known = initiatives.get(c.definition.toLowerCase());
+      if (!known) {
+        notes.push({ level: 'warning', text: `Custom assignment "${label}": initiative ${c.definition} isn't in the catalog, so it's left out.` });
+        continue;
+      }
+      policies = applyEffectParameters(known.policies.filter(available), c.parameters);
+      definitionName = known.name;
+      description = known.description;
+    } else {
+      const info = catalog.policies[c.definition];
+      if (!info) {
+        notes.push({ level: 'warning', text: `Custom assignment "${label}": policy ${c.definition} isn't in the catalog or the policy index, so it's left out.` });
+        continue;
+      }
+      if (gov && info.ng) {
+        notes.push({ level: 'warning', text: `Custom assignment "${label}": ${info.n} isn't available in Azure Government, so it's left out.` });
+        continue;
+      }
+      policies = [{ p: c.definition, e: effectParameter(c.parameters) ?? info.e }];
+      definitionName = info.n;
+      description = info.d ?? '';
+    }
+    mg.assignments.push({
+      name: c.name,
+      displayName: c.displayName || definitionName,
+      description: description.slice(0, 512),
+      origin: 'custom',
+      kind: c.kind,
+      definitionId: `/providers/Microsoft.Authorization/${c.kind === 'initiative' ? 'policySetDefinitions' : 'policyDefinitions'}/${c.definition}`,
+      definitionName,
+      definitionSource: 'BuiltIn',
+      enforcementMode: c.enforcementMode,
+      identity: policies.some((m) => NEEDS_IDENTITY.has(m.e)),
+      policies,
+      rationale: 'Added to the design by hand.',
+      exemptions: [],
+      ...(Object.keys(c.parameters ?? {}).length ? { parameters: c.parameters } : {}),
     });
   }
 

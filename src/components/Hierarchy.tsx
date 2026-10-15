@@ -12,6 +12,7 @@ import {
   type PlannedMg,
 } from '../lib/engine';
 import { ExemptionsEditor, OverrideEditor } from './AssignmentEditor';
+import { AddAssignment, RemoveCustomAssignment } from './CustomAssignmentEditor';
 import { EffectSummary, ModeBadge, OriginBadge, PolicyLink, definitionUrl } from './common';
 
 const POLICY_PREVIEW = 40;
@@ -312,6 +313,7 @@ export function Hierarchy({
                     editors={
                       <>
                         <OverrideEditor key={`o-${mg.role}-${a.name}`} design={design} mg={mg} assignment={a} input={input} onChange={onChange} />
+                        {a.origin === 'custom' && <RemoveCustomAssignment mg={mg} name={a.name} input={input} onChange={onChange} />}
                         <ExemptionsEditor catalog={catalog} design={design} mg={mg} assignment={a} input={input} onChange={onChange} />
                       </>
                     }
@@ -339,6 +341,7 @@ export function Hierarchy({
                 : 'No assignments at this level; everything here is inherited.'}
           </p>
         )}
+        <AddAssignment key={mg.role} catalog={catalog} mg={mg} input={input} onChange={onChange} />
         {mg.removed.length > 0 && (
           <p className="removed">
             Removed by override:{' '}

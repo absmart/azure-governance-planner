@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import catalogJson from '../data/catalog.json';
-import type { Catalog } from './catalog';
+import type { Catalog, PolicyInfo } from './catalog';
 import {
   assignmentName,
   buildDesign,
@@ -10,6 +11,9 @@ import {
   effectiveAssignments,
   exemptionExpiry,
   inNistBaseline,
+  knownInitiatives,
+  withCustomPolicies,
+  type CustomAssignment,
   type DesignInput,
 } from './engine';
 import { familyOf } from './families';
@@ -518,5 +522,83 @@ describe('coverage reflects the design', () => {
       exemptions: [{ id: 'x', mg: holder.mg, assignment: holder.a.name, scope: { kind: 'subscription', id: '2222' }, policies: [policy], category: 'Mitigated', reason: 'r' }],
     });
     expect(control(exempted, target.id).exceptions).toContain(`${holder.a.name} exempted at 2222 (mitigated)`);
+  });
+});
+
+describe('custom assignments', () => {
+  const index = JSON.parse(readFileSync(new URL('../../public/policy-index.json', import.meta.url), 'utf8')) as { policies: Record<string, PolicyInfo> };
+  // A DeployIfNotExists built-in the catalog doesn't carry, only the policy index.
+  const arc = '0adc5395-9169-4b9b-8687-af838d69410a';
+  const custom = (c: Partial<CustomAssignment> = {}): CustomAssignment => ({
+    id: 'c1',
+    mg: 'corp',
+    name: 'Deploy-Arc-Policy',
+    displayName: 'Arc policy extension',
+    kind: 'policy',
+    definition: arc,
+    info: index.policies[arc],
+    enforcementMode: 'Default',
+    parameters: {},
+    ...c,
+  });
+
+  it('has every built-in policy in the index, the catalog\'s included', () => {
+    expect(catalog.policies[arc]).toBeUndefined();
+    expect(Object.keys(index.policies).length).toBeGreaterThan(Object.values(catalog.policies).filter((p) => p.t === 'BuiltIn').length);
+    expect(index.policies[arc]).toMatchObject({ e: 'DeployIfNotExists', t: 'BuiltIn' });
+  });
+
+  it('assigns a built-in from the policy index at its management group', () => {
+    const d = design({ customAssignments: [custom()] });
+    const a = find(d, 'Deploy-Arc-Policy')!;
+    expect(a.mg).toBe('corp');
+    expect(a.a).toMatchObject({
+      origin: 'custom',
+      kind: 'policy',
+      definitionId: `/providers/Microsoft.Authorization/policyDefinitions/${arc}`,
+      definitionName: index.policies[arc].n,
+      identity: true,
+      policies: [{ p: arc, e: 'DeployIfNotExists' }],
+    });
+    expect(withCustomPolicies(catalog, d.input.customAssignments).policies[arc]).toEqual(index.policies[arc]);
+  });
+
+  it('takes its effect from an "effect" parameter', () => {
+    const a = find(design({ customAssignments: [custom({ parameters: { effect: 'disabled' } })] }), 'Deploy-Arc-Policy')!.a;
+    expect(a.policies).toEqual([{ p: arc, e: 'Disabled' }]);
+    expect(a.identity).toBe(false);
+    expect(a.parameters).toEqual({ effect: 'disabled' });
+  });
+
+  it('assigns a built-in initiative the catalog knows', () => {
+    const iso = catalog.frameworks.find((f) => f.key === 'iso-27001-2022')!;
+    expect(knownInitiatives(catalog).some((i) => i.id === iso.id)).toBe(true);
+    const a = find(design({ customAssignments: [custom({ kind: 'initiative', definition: iso.id, name: 'Audit-ISO-Corp', info: undefined })] }), 'Audit-ISO-Corp')!.a;
+    expect(a.policies).toHaveLength(iso.refs.length);
+    expect(a.definitionId).toBe(`/providers/Microsoft.Authorization/policySetDefinitions/${iso.id}`);
+  });
+
+  it('leaves out clashing names, missing groups and unknown definitions, with a warning each', () => {
+    const d = design({
+      online: false,
+      customAssignments: [
+        custom({ id: '1', name: 'Deny-IP-forwarding', mg: 'landingzones' }),
+        custom({ id: '2', mg: 'online' }),
+        custom({ id: '3', name: 'Unknown', definition: '11111111-2222-3333-4444-555555555555', info: undefined }),
+      ],
+    });
+    expect(d.mgs.flatMap((m) => m.assignments).filter((a) => a.origin === 'custom')).toHaveLength(0);
+    expect(d.notes.filter((n) => n.level === 'warning' && n.text.startsWith('Custom assignment'))).toHaveLength(3);
+  });
+
+  it('can be overridden and exempted like any assignment', () => {
+    const d = design({
+      customAssignments: [custom()],
+      overrides: { 'corp/Deploy-Arc-Policy': { enforcementMode: 'DoNotEnforce' } },
+      exemptions: [{ id: 'x', mg: 'corp', assignment: 'Deploy-Arc-Policy', scope: { kind: 'subscription', id: '1111' }, policies: [], category: 'Waiver', reason: 'r' }],
+    });
+    const a = find(d, 'Deploy-Arc-Policy')!.a;
+    expect(a.enforcementMode).toBe('DoNotEnforce');
+    expect(a.exemptions).toHaveLength(1);
   });
 });

@@ -27,6 +27,12 @@ function CopyBlock({ text, label }: { text: string; label?: string }) {
 }
 
 /** Import a tenant's management groups, policy assignments and exemptions from an Azure Resource Graph export. */
+const QUERY_LABELS = [
+  'assignments, exemptions, custom definitions, management groups',
+  'the assigned built-in definitions',
+  'compliance state (optional): resources per policy and state',
+];
+
 export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot: PolicySnapshot) => void; onClose: () => void }) {
   const { catalog, onClose } = props;
   const [tab, setTab] = useState(0);
@@ -62,7 +68,7 @@ export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot
         </header>
         <p className="muted">
           Reads, through Azure Resource Graph, the management groups, policy assignments and exemptions you can see, with the
-          definitions they use. Nothing is changed in Azure.
+          definitions they use and how many resources comply with each policy. Nothing is changed in Azure.
         </p>
         <div className="file-tabs" role="tablist">
           {METHODS.map((m, i) => (
@@ -86,11 +92,14 @@ export function ImportAzureDialog(props: { catalog: Catalog; onImport: (snapshot
                 Paste query 1 and select <strong>Run query</strong>. Turn <strong>Format results</strong> off, then{' '}
                 <strong>Download as CSV</strong>.
               </li>
-              <li>Do the same with query 2. Resource Graph allows only one lookup of policy data per query, so there are two.</li>
-              <li>Choose both CSV files below.</li>
+              <li>
+                Do the same with queries 2 and 3. Resource Graph allows only one lookup of policy data per query, so there are three. Query 3,
+                the compliance state, is optional.
+              </li>
+              <li>Choose the CSV files below.</li>
             </ol>
             {AZURE_IMPORT_QUERIES.map((q, i) => (
-              <CopyBlock key={i} text={q} label={`Query ${i + 1}: ${i === 0 ? 'assignments, exemptions, custom definitions, management groups' : 'the assigned built-in definitions'}`} />
+              <CopyBlock key={i} text={q} label={`Query ${i + 1}: ${QUERY_LABELS[i]}`} />
             ))}
           </div>
         ) : (

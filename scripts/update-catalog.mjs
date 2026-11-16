@@ -29,7 +29,7 @@ const initiativeIndexOut = fileURLToPath(new URL('../public/initiative-index.jso
 const AZADVERTIZER = 'https://www.azadvertizer.net';
 const POLICY_REPO = 'https://raw.githubusercontent.com/Azure/azure-policy/master/built-in-policies/policySetDefinitions';
 /** ALZ library release the design and the exported definitions are pinned to. */
-const ALZ_REF = 'platform/alz/2026.10.0';
+const ALZ_REF = 'platform/alz/2026.11.0';
 const ALZ_LIB = `https://raw.githubusercontent.com/Azure/Azure-Landing-Zones-Library/refs/tags/${ALZ_REF}/platform/alz`;
 const ALZ_CONTENTS = 'https://api.github.com/repos/Azure/Azure-Landing-Zones-Library/contents/platform/alz';
 const OSCAL = 'https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov/SP800-53/rev5/json';
